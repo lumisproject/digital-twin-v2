@@ -7,7 +7,7 @@ from src.retriever import GraphRetriever
 from src.answer_generator import AnswerGenerator
 
 class LumisAgent:
-    def __init__(self, project_id: str, mode: str = "multi-turn", max_steps: int = 10):
+    def __init__(self, project_id: str, mode: str = "multi-turn", max_steps: int = 5):
         self.project_id = project_id
         self.mode = mode
         self.retriever = GraphRetriever(project_id)
@@ -75,8 +75,10 @@ class LumisAgent:
         
         if action == "list_files":
             files = self.retriever.list_all_files()
-            obs = "Files: " + ", ".join(files[:50])
-            
+            if not files:
+                obs = "Observation: No files found in this project. Is the repository indexed?"
+            else:
+                obs = f"Observation: Found {len(files)} files. Top files: " + ", ".join(files[:100])
         elif action == "read_file":
             # Fix: Handle case where input might be a list or multiline string
             path = inp.strip()
