@@ -25,20 +25,6 @@ def get_project_risks(project_id):
         .execute()
     return response.data
 
-def get_project_data(project_id):
-    """Fetches full graph for analysis."""
-    units_resp = supabase.table("memory_units")\
-        .select("unit_name, file_path, last_modified_at, author_email, content, unit_type")\
-        .eq("project_id", project_id)\
-        .execute()
-        
-    edges_resp = supabase.table("graph_edges")\
-        .select("source_unit_name, target_unit_name, edge_type")\
-        .eq("project_id", project_id)\
-        .execute()
-        
-    return units_resp.data, edges_resp.data
-
 # --- WRITE OPERATIONS ---
 
 def save_risk_alerts(project_id, risks):
