@@ -17,8 +17,12 @@ export default function Dashboard() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
-  const bottomRef = useRef(null)
   const [repoUrl, setRepoUrl] = useState('')
+  
+  // NEW: Chat Mode State
+  const [chatMode, setChatMode] = useState('multi-turn') // 'multi-turn' | 'single-turn'
+  
+  const bottomRef = useRef(null)
 
   // 1. Boot: Check Session and Load Project
   useEffect(() => {
@@ -32,9 +36,11 @@ export default function Dashboard() {
         setProjectData(p)
         setAppState('READY')
         // Initial risk load
-        const res = await fetch(`http://localhost:5000/api/risks/${p.id}`)
-        const d = await res.json()
-        if (d.status === 'success') setRisks(d.risks)
+        try {
+            const res = await fetch(`http://localhost:5000/api/risks/${p.id}`)
+            const d = await res.json()
+            if (d.status === 'success') setRisks(d.risks)
+        } catch(e) { console.error("Risk fetch error", e) }
       } else {
         setAppState('NO_PROJECT')
       }
@@ -42,63 +48,33 @@ export default function Dashboard() {
     boot()
   }, [navigate])
 
-  // 2. THE WATCHER: Detects Webhooks and Completion
+  // Scroll to bottom on new message
   useEffect(() => {
-    if (appState !== 'READY' || !projectData?.id) return
-
-    const watchBackend = async () => {
-      try {
-        const res = await fetch(`http://localhost:5000/api/ingest/status/${projectData.id}`)
-        const data = await res.json()
-
-        // TRIGGER WIZARD: If status is anything active
-        const activeStatuses = ['STARTING', 'PROCESSING', 'Cloning', 'Analyzing', 'Processing', 'Cleanup', 'Intelligence']
-        if (activeStatuses.includes(data.status)) {
-          if (!isIngesting) {
-            console.log("Sync detected via Heartbeat...");
-            setIngestionProjectId(projectData.id)
-            setIsIngesting(true)
-          }
-        }
-
-        // TRIGGER RELOAD: If status is DONE, close wizard and hard refresh
-        // This takes you back to the Dashboard automatically
-        if (data.status === 'DONE') {
-          console.log("Sync complete. Reloading application...");
-          setIsIngesting(false)
-          window.location.reload() 
-        }
-      } catch (e) { console.error("Watcher error", e) }
-    }
-
-    const timer = setInterval(watchBackend, 3000) 
-    return () => clearInterval(timer)
-  }, [appState, projectData?.id, isIngesting])
-
-  useEffect(() => {
-    if (bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 3. Handlers
+  // 2. Handlers
   const handleIngest = async () => {
-    if (!repoUrl) return
-    const res = await fetch('http://localhost:5000/api/ingest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: session.user.id, repo_url: repoUrl })
-    })
-    const data = await res.json()
-    if (res.ok) {
-      setIngestionProjectId(data.project_id)
-      setIsIngesting(true)
-    }
+    const urlToUse = repoUrl || projectData?.repo_url
+    if (!urlToUse) return
+
+    try {
+      const res = await fetch('http://localhost:5000/api/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: session.user.id, repo_url: urlToUse })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setIngestionProjectId(data.project_id)
+        setIsIngesting(true)
+      }
+    } catch (e) { alert("Server connection failed.") }
   }
 
   const handleIngestionComplete = () => {
-    setShowWizard(false);
-    window.location.reload(); // Force refresh to see new risks
+    setIsIngesting(false);
+    window.location.reload(); // Refresh to load new risks/graph
   };
 
   const handleChat = async (e) => {
@@ -106,31 +82,33 @@ export default function Dashboard() {
     if (!input.trim() || chatLoading) return
     
     const userMsg = { role: 'user', content: input }
-    // 1. Add User Message
     setMessages(prev => [...prev, userMsg])
     setInput('')
     setChatLoading(true)
     
-    // 2. Add "Thinking" placeholder immediately
+    // Add Thinking Bubble
     setMessages(prev => [...prev, { role: 'lumis', content: '...', isThinking: true }])
     
     try {
       const res = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: projectData.id, query: userMsg.content })
+        body: JSON.stringify({ 
+            project_id: projectData.id, 
+            query: userMsg.content,
+            mode: chatMode // <--- Pass the selected mode
+        })
       })
       const data = await res.json()
       
-      // 3. Replace placeholder with real answer
+      // Replace Thinking Bubble with Answer
       setMessages(prev => {
         const filtered = prev.filter(m => !m.isThinking)
         return [...filtered, { role: 'lumis', content: data.response }]
       })
     } catch (err) {
       console.error("Chat error", err)
-      // Remove thinking bubble on error
-      setMessages(prev => prev.filter(m => !m.isThinking))
+      setMessages(prev => [...prev.filter(m => !m.isThinking), { role: 'lumis', content: "Error: Could not reach Lumis Core." }])
     } finally {
       setChatLoading(false)
     }
@@ -140,10 +118,7 @@ export default function Dashboard() {
   if (isIngesting) {
     return (
       <div className="page-center">
-        <IngestionWizard 
-            projectId={ingestionProjectId} 
-            onComplete={handleIngestionComplete} 
-        />
+        <IngestionWizard projectId={ingestionProjectId} onComplete={handleIngestionComplete} />
       </div>
     )
   }
@@ -172,26 +147,21 @@ export default function Dashboard() {
         <div className="sidebar-content">
           <div className="section-title">Active Repository</div>
           <div className="info-card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 600, fontSize: '0.9rem', overflow:'hidden', textOverflow:'ellipsis' }}>
                     {projectData?.repo_url?.split('/').pop()}
                   </span>
-                  <code style={{ fontSize: '0.7rem', color: '#71717a' }}>
-                    {projectData?.last_commit?.substring(0, 7) || 'no-sync'}
-                  </code>
-              </div>
-              <div style={{ borderTop: '1px solid #e4e4e7', paddingTop: '10px' }}>
-                <div style={{ fontSize: '0.7rem', color: '#71717a', marginBottom: '4px' }}>GITHUB WEBHOOK</div>
-                <code style={{ display: 'block', background: '#f4f4f5', padding: '8px', borderRadius: '4px', fontSize: '0.6rem', wordBreak: 'break-all' }}>
-                  {`https://unsparing-kaley-unmodest.ngrok-free.dev/api/webhook/${session?.user?.id}/${projectData?.id}`}
-                </code>
+                  {/* RE-SYNC BUTTON */}
+                  <button onClick={handleIngest} title="Re-sync Codebase" style={{background:'none', border:'none', cursor:'pointer', fontSize:'1.2rem'}}>
+                    🔄
+                  </button>
               </div>
           </div>
           
           <div className="section-title">Risk Monitor</div>
           <div className="risk-stack">
-            {risks.length === 0 ? <div className="info-card">✅ System stable</div> : risks.map(r => (
-              <div key={r.id} className="risk-card">
+            {risks.length === 0 ? <div className="info-card" style={{color:'#71717a'}}>No active risks detected.</div> : risks.map((r, i) => (
+              <div key={i} className="risk-card">
                   <div className="risk-header"><span className="risk-type">{r.risk_type}</span></div>
                   <div className="risk-desc">{r.description}</div>
               </div>
@@ -204,7 +174,35 @@ export default function Dashboard() {
       </aside>
 
       <main className="main-stage">
-        <div className="stage-header"><span>Digital Twin Terminal</span></div>
+        <div className="stage-header">
+            <span>Digital Twin Terminal</span>
+            {/* MODE TOGGLE */}
+            <div style={{display:'flex', gap:'8px', background:'#f4f4f5', padding:'4px', borderRadius:'6px'}}>
+                <button 
+                    onClick={() => setChatMode('multi-turn')}
+                    style={{
+                        background: chatMode === 'multi-turn' ? 'white' : 'transparent',
+                        border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer',
+                        boxShadow: chatMode === 'multi-turn' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
+                        fontWeight: chatMode === 'multi-turn' ? 600 : 400
+                    }}
+                >
+                    Multi-Turn
+                </button>
+                <button 
+                    onClick={() => setChatMode('single-turn')}
+                    style={{
+                        background: chatMode === 'single-turn' ? 'white' : 'transparent',
+                        border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer',
+                        boxShadow: chatMode === 'single-turn' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
+                        fontWeight: chatMode === 'single-turn' ? 600 : 400
+                    }}
+                >
+                    Single-Turn
+                </button>
+            </div>
+        </div>
+        
         <div className="chat-scroll-area">
           <div className="message-wrapper">
             {messages.map((m, i) => (
@@ -213,9 +211,7 @@ export default function Dashboard() {
                   {m.isThinking ? (
                     <div className="dots-container">
                       <span className="thinking-text">Exploring codebase...</span>
-                      <div className="dot"></div>
-                      <div className="dot"></div>
-                      <div className="dot"></div>
+                      <div className="dot"></div><div className="dot"></div><div className="dot"></div>
                     </div>
                   ) : (
                     <ReactMarkdown>{m.content}</ReactMarkdown>
@@ -226,9 +222,15 @@ export default function Dashboard() {
             <div ref={bottomRef} />
           </div>
         </div>
+        
         <div className="input-zone">
             <form className="input-container" onSubmit={handleChat}>
-                <input className="chat-input" placeholder="Ask Lumis..." value={input} onChange={e => setInput(e.target.value)} />
+                <input 
+                    className="chat-input" 
+                    placeholder="Ask Lumis about architecture, bugs, or risks..." 
+                    value={input} 
+                    onChange={e => setInput(e.target.value)} 
+                />
                 <button type="submit" className="send-button">Send</button>
             </form>
         </div>

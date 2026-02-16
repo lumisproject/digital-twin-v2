@@ -1,136 +1,132 @@
-import uuid
 import logging
-from typing import Dict, Optional
-from contextlib import asynccontextmanager
-
+from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Import your core modules
+# Core Modules
 from src.agent import LumisAgent
 from src.ingestor import ingest_repo
-from src.retriever import GraphRetriever
-from src.db_client import supabase
+from src.db_client import supabase, get_project_risks
 
 # --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LumisAPI")
 
-# --- IN-MEMORY SESSION STORE ---
-# In production, use Redis. For now, we store active agents in memory.
-# Format: { "session_id": LumisAgent_instance }
-active_agents: Dict[str, LumisAgent] = {}
+app = FastAPI(title="Lumis Digital Twin API")
 
-# --- DATA MODELS (Pydantic) ---
-class ChatRequest(BaseModel):
-    project_id: str
-    query: str
-    session_id: Optional[str] = None  # Client can send a unique ID to maintain history
-    mode: str = "multi-turn"          # "multi-turn" or "single-turn"
-
-class IngestRequest(BaseModel):
-    repo_url: str
-    project_id: str
-    user_id: Optional[str] = "api-user"
-
-class ChatResponse(BaseModel):
-    answer: str
-    session_id: str
-
-# --- LIFESPAN MANAGER ---
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("🚀 Lumis API starting up...")
-    yield
-    active_agents.clear()
-    logger.info("🛑 Lumis API shutting down...")
-
-# --- APP SETUP ---
-app = FastAPI(title="Lumis Digital Twin API", version="1.0", lifespan=lifespan)
-
-# CORS (Allow your future frontend to talk to this API)
+# Allow Frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with ["http://localhost:3000"]
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- STATE MANAGEMENT ---
+# Store active agents: { "project_id": AgentInstance }
+active_agents: Dict[str, LumisAgent] = {}
+
+# Store ingestion logs for UI polling: { "project_id": { status, logs, step } }
+ingestion_state: Dict[str, Dict] = {}
+
+# --- MODELS ---
+class ChatRequest(BaseModel):
+    project_id: str
+    query: str
+    mode: str = "multi-turn" # New field for the toggle
+
+class IngestRequest(BaseModel):
+    user_id: str
+    repo_url: str
+
+# --- HELPER: Ingestion Progress Tracker ---
+def update_progress(project_id, task, message):
+    if project_id not in ingestion_state:
+        ingestion_state[project_id] = {"status": "processing", "logs": [], "step": "Starting"}
+    
+    state = ingestion_state[project_id]
+    state["step"] = task
+    if message:
+        state["logs"].append(f"[{task}] {message}")
+    
+    if task == "DONE":
+        state["status"] = "completed"
+    elif task == "Error":
+        state["status"] = "failed"
+        state["error"] = message
+
 # --- ENDPOINTS ---
 
-@app.get("/")
-def health_check():
-    return {"status": "running", "active_sessions": len(active_agents)}
-
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     """
-    Main Chat Interface.
-    Maintains conversation history if session_id is provided.
+    Handles chat requests. Automatically switches modes.
     """
-    session_id = req.session_id or str(uuid.uuid4())
-
-    # 1. Get or Create Agent
-    if session_id not in active_agents:
-        logger.info(f"✨ Creating new agent for session: {session_id}")
-        try:
-            # Initialize the agent (this connects to Supabase)
-            agent = LumisAgent(project_id=req.project_id, mode=req.mode)
-            active_agents[session_id] = agent
-        except Exception as e:
-            logger.error(f"Failed to init agent: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    agent = active_agents[session_id]
-
-    # 2. Ask the Agent (This runs the Adaptive Loop)
     try:
+        # 1. Initialize or Update Agent
+        if req.project_id not in active_agents:
+            logger.info(f"✨ Spawning agent for {req.project_id}")
+            active_agents[req.project_id] = LumisAgent(project_id=req.project_id, mode=req.mode)
+        
+        agent = active_agents[req.project_id]
+        
+        # 2. Force mode update (in case user toggled the switch)
+        agent.mode = req.mode
+        
+        # 3. Get Answer
         response_text = agent.ask(req.query)
-        return ChatResponse(answer=response_text, session_id=session_id)
+        return {"response": response_text}
+        
     except Exception as e:
-        logger.error(f"Agent error: {e}")
-        raise HTTPException(status_code=500, detail=f"Agent reasoning failed: {str(e)}")
-
-@app.post("/ingest")
-async def ingest_endpoint(req: IngestRequest, background_tasks: BackgroundTasks):
-    """
-    Triggers repository ingestion in the background.
-    """
-    # Define a wrapper for logging
-    def run_ingestion():
-        logger.info(f"🔄 Starting background ingestion for {req.repo_url}...")
-        try:
-            # We use a simple print callback for server logs
-            ingest_repo(req.repo_url, req.project_id, req.user_id, progress_callback=lambda t, m: logger.info(f"[{t}] {m}"))
-            logger.info(f"✅ Ingestion complete for {req.project_id}")
-        except Exception as e:
-            logger.error(f"❌ Ingestion failed: {e}")
-
-    # Add to background tasks so API responds immediately
-    background_tasks.add_task(run_ingestion)
-    
-    return {"message": "Ingestion started", "project_id": req.project_id, "status": "processing"}
-
-@app.get("/files/{project_id}")
-def list_files_endpoint(project_id: str):
-    """
-    Returns the file structure for the frontend file tree.
-    """
-    try:
-        retriever = GraphRetriever(project_id)
-        files = retriever.list_all_files()
-        return {"project_id": project_id, "files": files, "count": len(files)}
-    except Exception as e:
+        logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/session/{session_id}")
-def clear_session(session_id: str):
-    """
-    Clears the memory for a specific user session.
-    """
-    if session_id in active_agents:
-        del active_agents[session_id]
-        return {"message": "Session cleared"}
-    raise HTTPException(status_code=404, detail="Session not found")
+@app.post("/api/ingest")
+async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
+    try:
+        # 1. Create/Get Project in DB to generate ID
+        # We use a simple select or insert logic
+        existing = supabase.table("projects").select("id").eq("repo_url", req.repo_url).execute()
+        if existing.data:
+            project_id = existing.data[0]['id']
+        else:
+            res = supabase.table("projects").insert({
+                "user_id": req.user_id, "repo_url": req.repo_url
+            }).execute()
+            project_id = res.data[0]['id']
+
+        # 2. Reset State
+        ingestion_state[project_id] = {"status": "starting", "logs": ["Request received..."], "step": "Init"}
+
+        # 3. Run Ingestion in Background
+        background_tasks.add_task(
+            ingest_repo,
+            repo_url=req.repo_url,
+            project_id=project_id,
+            user_id=req.user_id,
+            progress_callback=lambda t, m: update_progress(project_id, t, m)
+        )
+        
+        return {"project_id": project_id, "status": "started"}
+
+    except Exception as e:
+        logger.error(f"Ingest start failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ingest/status/{project_id}")
+async def get_ingest_status(project_id: str):
+    """Called by the IngestionWizard component to show logs."""
+    return ingestion_state.get(project_id, {"status": "idle", "logs": [], "step": "Ready"})
+
+@app.get("/api/risks/{project_id}")
+async def get_risks_endpoint(project_id: str):
+    """Called by Dashboard sidebar."""
+    risks = get_project_risks(project_id)
+    return {"status": "success", "risks": risks if risks else []}
+
+if __name__ == "__main__":
+    import uvicorn
+    # Run on port 5000 to match your frontend default
+    uvicorn.run(app, host='0.0.0.0', port=5000)
