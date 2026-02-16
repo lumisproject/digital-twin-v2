@@ -1,7 +1,6 @@
 import os
-from typing import List, Dict, Optional, Any, get_args
+from typing import List, Optional, get_args
 from dataclasses import dataclass, field
-import tree_sitter_language_pack
 from tree_sitter_language_pack import get_parser, SupportedLanguage
 
 # --- CONFIGURATION ---
