@@ -28,6 +28,7 @@ class LumisAgent:
         print(f"\n🤖 LUMIS: {user_query}")
 
         for step in range(self.max_steps):
+            # FIX: Pass conversation history to the prompt builder
             prompt = self._build_step_prompt(user_query, scratchpad)
             
             # 1. Get LLM response
@@ -167,8 +168,17 @@ class LumisAgent:
         )
 
     def _build_step_prompt(self, query, scratchpad):
-        history = "\n".join([f"Action: {s['action']} -> {s['observation']}" for s in scratchpad])
-        return f"USER QUERY: {query}\n\nPROGRESS:\n{history}\n\nNEXT JSON:"
+        # FIX: Include conversation history for context-aware reasoning
+        history_text = ""
+        if self.conversation_history and len(self.conversation_history) > 0:
+            # Use last 6 messages to keep context relevant but concise
+            recent_msgs = self.conversation_history[-6:]
+            history_text = "CONVERSATION HISTORY:\n" + "\n".join(
+                [f"{m['role'].upper()}: {m['content']}" for m in recent_msgs]
+            ) + "\n\n"
+            
+        progress = "\n".join([f"Action: {s['action']} -> {s['observation']}" for s in scratchpad])
+        return f"{history_text}USER QUERY: {query}\n\nPROGRESS:\n{progress}\n\nNEXT JSON:"
 
     def _update_history(self, q, a):
         if self.mode == "multi-turn":
