@@ -154,15 +154,26 @@ body, html {
 }
 
 /* =========================================
-   DASHBOARD APP SHELL (Previous Code)
+   DASHBOARD APP SHELL
    ========================================= */
 .app-shell { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
 .sidebar { width: 320px; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
 .sidebar-header { height: 60px; display: flex; align-items: center; padding: 0 1.5rem; border-bottom: 1px solid var(--border); }
 .brand { font-weight: 700; font-size: 1rem; display: flex; align-items: center; gap: 8px; }
-.sidebar-content { flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 2rem; }
+.sidebar-content { flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem; } /* Reduced gap from 2rem to 1.5rem */
 .sidebar-footer { padding: 1rem 1.5rem; border-top: 1px solid var(--border); font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; }
-.section-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600; margin-bottom: 0.75rem; }
+
+/* Fixed Title Spacing */
+.section-title { 
+  font-size: 0.75rem; 
+  text-transform: uppercase; 
+  letter-spacing: 0.08em; 
+  color: var(--text-muted); 
+  font-weight: 600; 
+  margin-bottom: 0.1rem; /* Reduced from 0.75rem */
+  margin-top: 0.1rem;    /* Added small top margin for clear grouping */
+}
+
 .info-card { background: white; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); }
 .webhook-url { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); word-break: break-all; margin-top: 4px; }
 
@@ -234,7 +245,6 @@ body, html {
   40% { transform: scale(1.0); }
 }
 
-/* Optional: Pulse the whole bubble slightly */
 .thinking {
   animation: breathe 2s infinite ease-in-out;
 }

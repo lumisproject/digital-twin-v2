@@ -15,6 +15,7 @@ export default function Dashboard() {
   const [input, setInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [repoUrl, setRepoUrl] = useState('')
+  const [copied, setCopied] = useState(false) 
   
   // Toggles
   const [chatMode, setChatMode] = useState('multi-turn') 
@@ -29,13 +30,11 @@ export default function Dashboard() {
       if (!s) { navigate('/login'); return; }
       setSession(s)
 
-      // Fetch project including the last_commit field
       const { data: p } = await supabase.from('projects').select('*').eq('user_id', s.user.id).maybeSingle()
       if (p) {
         setProjectData(p)
         setAppState('READY')
         
-        // Initial check: Is it currently syncing?
         try {
             const res = await fetch(`http://localhost:5000/api/ingest/status/${p.id}`)
             const statusData = await res.json()
@@ -45,7 +44,6 @@ export default function Dashboard() {
             }
         } catch (e) {}
 
-        // Load Risks
         try {
             const res = await fetch(`http://localhost:5000/api/risks/${p.id}`)
             const d = await res.json()
@@ -58,13 +56,11 @@ export default function Dashboard() {
     boot()
   }, [navigate])
 
-  // Poll for Agent "Thinking" steps and Project Metadata updates (like Commit ID)
   useEffect(() => {
     if (!projectData?.id) return
 
     const interval = setInterval(async () => {
       try {
-        // 1. Poll Ingestion/Agent logs
         const res = await fetch(`http://localhost:5000/api/ingest/status/${projectData.id}`)
         const data = await res.json()
         
@@ -77,7 +73,6 @@ export default function Dashboard() {
           }
         }
 
-        // 2. Occasionally refresh project metadata to catch the new Commit ID after sync
         if (data.status === 'completed' || Math.random() > 0.8) {
             const { data: freshProject } = await supabase.from('projects').select('*').eq('id', projectData.id).maybeSingle()
             if (freshProject) setProjectData(freshProject)
@@ -93,7 +88,6 @@ export default function Dashboard() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 2. Handlers
   const handleIngest = async () => {
     const urlToUse = repoUrl || projectData?.repo_url
     if (!urlToUse) return
@@ -130,7 +124,7 @@ export default function Dashboard() {
             project_id: projectData.id, 
             query: userMsg.content,
             mode: chatMode,
-            reasoning: reasoning // Pass toggle state
+            reasoning: reasoning 
         })
       })
       const data = await res.json()
@@ -144,6 +138,13 @@ export default function Dashboard() {
     } finally {
       setChatLoading(false)
     }
+  }
+
+  const handleCopyWebhook = () => {
+    const webhookUrl = `https://unsparing-kaley-unmodest.ngrok-free.dev/api/webhook/${session?.user?.id}/${projectData?.id}`;
+    navigator.clipboard.writeText(webhookUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }
 
   if (appState === 'LOADING') return <div className="page-center"><div className="spinner"></div></div>
@@ -182,7 +183,6 @@ export default function Dashboard() {
                   <button onClick={handleIngest} title="Force Re-sync" className="btn-text" style={{ fontSize:'1.1rem', padding:'4px', marginTop:'-4px' }}>🔄</button>
               </div>
 
-              {/* Commit ID Display */}
               <div style={{ borderTop: '1px solid #e4e4e7', paddingTop: '10px', marginTop: '10px' }}>
                 <div style={{ fontSize: '0.7rem', color: '#71717a', marginBottom: '4px', fontWeight: 600, letterSpacing: '0.02em' }}>
                     LAST COMMIT
@@ -194,6 +194,35 @@ export default function Dashboard() {
                     </code>
                 </div>
               </div>
+          </div>
+
+          {/* Fixed Spacing for Webhook Integration Title */}
+          <div className="section-title" style={{ marginBottom: '8px' }}>Webhook Integration</div>
+          <div className="info-card" style={{ padding: '16px' }}>
+            <div style={{ fontSize: '0.75rem', color: '#71717a', lineHeight: '1.5', marginBottom: '12px' }}>
+              Keep Lumis in sync with your codebase automatically:
+              <ol style={{ paddingLeft: '1.2rem', margin: '8px 0' }}>
+                <li>Go to your repo <strong>Settings</strong></li>
+                <li>Click on <strong>Webhooks</strong> → <strong>Add webhook</strong></li>
+                <li>Paste URL below into <strong>Payload URL</strong></li>
+                <li>Set Content type to <code>application/json</code></li>
+              </ol>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input 
+                className="input-field" 
+                readOnly 
+                value={`https://unsparing-kaley-unmodest.ngrok-free.dev/api/webhook/${session?.user?.id}/${projectData?.id}`} 
+                style={{ fontSize: '0.7rem', padding: '6px 8px', background: '#f9fafb' }}
+              />
+              <button 
+                onClick={handleCopyWebhook}
+                className="btn btn-outline" 
+                style={{ padding: '6px 10px', fontSize: '0.75rem' }}
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
           </div>
           
           <div className="section-title">Risk Monitor</div>
@@ -215,7 +244,6 @@ export default function Dashboard() {
         <div className="stage-header">
             <span>Digital Twin Terminal</span>
             <div style={{display:'flex', gap:'8px', alignItems:'center'}}>
-                
                 <button 
                     onClick={() => setReasoning(!reasoning)}
                     style={{

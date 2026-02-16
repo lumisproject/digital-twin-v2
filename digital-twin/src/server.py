@@ -1,7 +1,7 @@
 import logging
 import asyncio # Added for non-blocking execution
 from typing import Dict, List, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -58,6 +58,64 @@ def update_progress(project_id, task, message):
         state["error"] = message
 
 # --- ENDPOINTS ---
+
+@app.post("/api/webhook/{user_id}/{project_id}")
+async def github_webhook(user_id: str, project_id: str, request: Request, background_tasks: BackgroundTasks):
+    try:
+        # 1. Fetch project safely
+        # Use maybe_single() to avoid crashing if the ID is wrong
+        res = supabase.table("projects") \
+            .select("*") \
+            .eq("id", project_id) \
+            .eq("user_id", user_id) \
+            .maybe_single() \
+            .execute()
+
+        # Handle missing project (common if DB was truncated)
+        if not res or not res.data:
+            logger.warning(f"Webhook Ignored: Project {project_id} not found for user {user_id}")
+            return {"status": "ignored", "reason": "project_not_found"}
+
+        payload = await request.json()
+
+        # 2. Handle GitHub's "Zen" test ping
+        if "zen" in payload:
+            logger.info("GitHub Zen ping received. Connection verified.")
+            return {"status": "ok", "message": "Lumis is listening"}
+
+        # 3. Handle Push Events
+        ref = payload.get("ref", "")
+        # Only trigger for pushes to branches (ignore tags/deletions)
+        if "refs/heads/" in ref:
+            new_sha = payload.get("after")
+            repo_url = payload.get("repository", {}).get("clone_url")
+            
+            logger.info(f"Webhook Trigger: Push detected on {ref} (Commit: {new_sha[:7]})")
+
+            # Update status immediately so the Dashboard polls and opens the Wizard
+            update_progress(
+                project_id, 
+                "STARTING", 
+                f"GitHub Push detected ({new_sha[:7]}). Initializing Twin Sync..."
+            )
+
+            # 4. Fire and forget: Run the full ingestion in the background
+            # Adapted to match ingest_repo signature and update_progress
+            background_tasks.add_task(
+                ingest_repo,
+                repo_url=repo_url,
+                project_id=project_id,
+                user_id=user_id,
+                progress_callback=lambda t, m: update_progress(project_id, t, m)
+            )
+
+            return {"status": "sync_started", "commit": new_sha}
+
+        return {"status": "ignored", "reason": "not_a_push_event"}
+
+    except Exception as e:
+        logger.error(f"CRITICAL: Webhook Processing Error: {str(e)}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
@@ -124,4 +182,5 @@ async def get_risks_endpoint(project_id: str):
 
 if __name__ == "__main__":
     import uvicorn
+    # Use the port defined by your environment or default to 5000
     uvicorn.run(app, host='0.0.0.0', port=5000)
