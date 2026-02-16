@@ -5,7 +5,7 @@ from src.services import get_llm_completion
 
 class AnswerGenerator:
     """
-    Generates high-quality, cited answers using the FastCode prompting strategy.
+    Generates evidence-based answers. Strictly forbids guessing architecture from file names.
     """
     def __init__(self, project_id: str):
         self.project_id = project_id
@@ -16,40 +16,35 @@ class AnswerGenerator:
         # 1. Format the Context
         context_str = self._prepare_context(collected_elements)
         
-        # 2. Build the System Prompt
+        # 2. Stricter System Prompt
         system_prompt = (
-            "You are Lumis, an expert Senior Software Architect and Code Analyst.\n"
-            "Your goal is to answer user questions about a codebase accurately, using ONLY the provided context.\n\n"
+            "You are Lumis, an expert Senior Software Architect.\n"
+            "Your goal is to answer user questions about a codebase using ONLY the provided code snippets.\n\n"
             "STRICT RULES:\n"
-            "1. CITATIONS: You MUST cite your sources. When referring to code, append the file path in brackets, e.g., 'The auth logic is in `src/auth.py` [src/auth.py]'.\n"
-            "2. NO HALLUCINATION: If the provided context is empty or insufficient, explicitly state: 'I could not find the answer in the retrieved files.' Do not guess.\n"
-            "3. MISSING README: If the context contains a 'Repository Structure' but no code snippets, infer the project purpose from the file names.\n"
-            "4. INTERNAL SUMMARY: You MUST end your response with a hidden <SUMMARY> block analyzing what you found."
+            "1. NO GUESSING: Do NOT infer architecture from file names. If the 'RETRIEVED CODE' section is empty or irrelevant, you MUST say: 'I could not find the specific implementation for this in the codebase.'\n"
+            "2. CITATIONS: Cite sources using brackets, e.g., [src/auth.py].\n"
+            "3. TECHNICAL DEPTH: Explain the logic flow, variables, and dependencies found in the snippets.\n"
+            "4. INTERNAL SUMMARY: End with a hidden <SUMMARY> block analyzing the findings."
         )
 
         # 3. Build the User Prompt
         history_text = ""
         if history:
-            recent = history[-6:] # Keep last few turns
+            recent = history[-6:]
             history_text = "PREVIOUS CONVERSATION:\n" + "\n".join([f"{m['role'].upper()}: {m['content']}" for m in recent]) + "\n\n"
-
-        structure_section = ""
-        if repo_structure:
-            structure_section = f"REPOSITORY STRUCTURE (File Names):\n{repo_structure}\n\n"
 
         user_prompt = (
             f"{history_text}"
             f"USER QUERY: {query}\n\n"
-            f"{structure_section}"
-            f"RETRIEVED CODE SNIPPETS:\n{context_str}\n\n"
+            f"RETRIEVED CODE:\n{context_str}\n\n"
             "INSTRUCTIONS:\n"
-            "- Answer the user's query in technical detail.\n"
-            "- Use the File Names to explain architecture if code is missing.\n"
-            "- Reference specific file names.\n"
-            "- End with <SUMMARY>Files Analyzed; Key Findings</SUMMARY>"
+            "- If code is present, explain how it works in detail.\n"
+            "- If code is missing, do NOT use file names to guess implementation.\n"
+            "- Reference specific file names and line contents.\n"
+            "- End with <SUMMARY>Files Analyzed; Evidence Found</SUMMARY>"
         )
         
-        # 4. Execute
+        # 4. Execute (Using default reasoning=False for speed in generation)
         raw_response = get_llm_completion(system_prompt, user_prompt)
         
         # 5. Parse
@@ -62,21 +57,17 @@ class AnswerGenerator:
         }
 
     def _prepare_context(self, elements: List[Dict[str, Any]]) -> str:
-        """Formats the retrieved code chunks into a readable structure."""
         if not elements:
-            return "No specific code snippets retrieved."
+            return "NO CODE SNIPPETS RETRIEVED."
         
-        # Deduplicate based on ID
         seen = set()
-        unique = []
-        for e in elements:
-            if e['id'] not in seen:
-                seen.add(e['id'])
-                unique.append(e)
-
         parts = []
-        for i, elem in enumerate(unique):
-            parts.append(f"### Source {i+1}: {elem.get('file_path')} ({elem.get('unit_name')})\n```python\n{elem.get('content')}\n```")
+        for elem in elements:
+            # Deduplicate by content to save tokens
+            content_hash = hash(elem.get('content', ''))
+            if content_hash not in seen:
+                seen.add(content_hash)
+                parts.append(f"### File: {elem.get('file_path')} (Unit: {elem.get('unit_name')})\n```python\n{elem.get('content')}\n```")
         
         return "\n\n".join(parts)
 

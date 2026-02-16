@@ -1,21 +1,23 @@
 import json
-import logging
 import re
+import logging
+import ast
 from typing import List, Dict, Any
 from src.services import get_llm_completion
 from src.retriever import GraphRetriever
 from src.answer_generator import AnswerGenerator
 
 class LumisAgent:
-    def __init__(self, project_id: str, mode: str = "multi-turn", max_steps: int = 5):
+    def __init__(self, project_id: str, mode: str = "multi-turn", max_steps: int = 4):
         self.project_id = project_id
         self.mode = mode
         self.retriever = GraphRetriever(project_id)
         self.generator = AnswerGenerator(project_id)
         self.max_steps = max_steps
         self.conversation_history: List[Dict[str, str]] = []
+        self.logger = logging.getLogger(__name__)
 
-    def ask(self, user_query: str) -> str:
+    def ask(self, user_query: str, reasoning_enabled: bool = False) -> str:
         if self.mode == "single-turn":
             self.conversation_history = []
 
@@ -23,130 +25,150 @@ class LumisAgent:
         collected_elements: List[Dict[str, Any]] = [] 
         repo_structure = None 
         
-        print(f"\n🤖 LUMIS (Adaptive): {user_query}")
+        print(f"\n🤖 LUMIS: {user_query}")
 
         for step in range(self.max_steps):
-            # 1. Decide on Action
             prompt = self._build_step_prompt(user_query, scratchpad)
-            response_text = get_llm_completion(self._get_system_prompt(), prompt)
             
-            # Robust JSON/XML parsing
-            data = self._parse_response(response_text)
+            # 1. Get LLM response
+            response_text = get_llm_completion(
+                self._get_system_prompt(), 
+                prompt, 
+                reasoning_enabled=reasoning_enabled
+            )
             
-            if not data:
-                return f"Error parsing Agent thought. Raw: {response_text}"
-
-            thought = data.get("thought", "Processing...")
+            # 2. Robust Parsing with Fallback
+            # Pass user_query so we can default to searching if parsing fails
+            data = self._parse_response(response_text, fallback_query=user_query)
+            
+            thought = data.get("thought", "Analyzing...")
             action = data.get("action")
+            confidence = data.get("confidence", 0)
             
-            print(f"🤔 Step {step+1}: {thought}")
+            print(f"🤔 Step {step+1} ({confidence}%): {thought}")
 
-            # 2. Adaptive Termination Check
-            if data.get("final_answer") or action == "final_answer":
-                # Generate draft answer
-                result = self.generator.generate(
-                    query=user_query, 
-                    collected_elements=collected_elements, 
-                    repo_structure=repo_structure,
-                    history=self.conversation_history
-                )
+            # 3. Smart Termination
+            if confidence >= 85 or action == "final_answer":
+                break
 
-                # Verification: Did we actually find the answer?
-                if "I could not find" in result['answer'] and step < self.max_steps - 2:
-                    print("   ⚠️ Insight: Answer incomplete. Continuing investigation...")
-                    scratchpad.append({
-                        "thought": "The previous info was insufficient. I need to try a different approach.",
-                        "action": "retry",
-                        "observation": "Draft answer failed. Search for broader terms or list files."
-                    })
-                    continue
-                else:
-                    self._update_history(user_query, result['answer'])
-                    return result['answer']
-
-            # 3. Execute Tools
+            # 4. Tool Execution
+            if not action or action == "none": 
+                print("⚠️ No action generated. Stopping.")
+                break
+                
             obs = self._execute_tool(action, data.get("action_input"), collected_elements, scratchpad)
             if action == "list_files": repo_structure = obs
 
-        return "I ran out of steps without finding a complete answer."
+        # Generate final answer with whatever was found
+        result = self.generator.generate(
+            query=user_query, 
+            collected_elements=collected_elements, 
+            repo_structure=repo_structure,
+            history=self.conversation_history
+        )
+        self._update_history(user_query, result['answer'])
+        return result['answer']
+
+    def _parse_response(self, text: str, fallback_query: str = "") -> Dict[str, Any]:
+        """
+        Robustly extracts JSON. If extraction fails, creates a fallback action 
+        based on the text content to keep the agent alive.
+        """
+        if not text: 
+            return self._create_fallback(fallback_query, "Empty response from LLM")
+
+        # 1. Try to find JSON block
+        clean_text = text.replace("```json", "").replace("```", "").strip()
+        start_idx = clean_text.find('{')
+        end_idx = clean_text.rfind('}')
+
+        if start_idx != -1 and end_idx != -1:
+            try:
+                json_str = clean_text[start_idx:end_idx + 1]
+                # Fix common LLM syntax errors before parsing
+                json_str = self._sanitize_json_string(json_str)
+                return json.loads(json_str)
+            except Exception as e:
+                print(f"⚠️ JSON extract failed: {e}")
+        
+        # 2. Python-dict Fallback (handling single quotes)
+        try:
+            if start_idx != -1 and end_idx != -1:
+                return ast.literal_eval(clean_text[start_idx:end_idx + 1])
+        except:
+            pass
+
+        # 3. Ultimate Fallback: Treat the text as a thought and force a search
+        # This fixes "I'll help you find..." causing a crash.
+        return self._create_fallback(fallback_query, text[:200])
+
+    def _create_fallback(self, query: str, thought_snippet: str) -> Dict[str, Any]:
+        """Creates a default search action when parsing fails."""
+        return {
+            "thought": f"Parsing failed. Falling back to search. Raw: {thought_snippet}...",
+            "action": "search_code",
+            "action_input": query,
+            "confidence": 50
+        }
+
+    def _sanitize_json_string(self, json_str: str) -> str:
+        """Fixes common JSON format errors."""
+        # Remove comments
+        json_str = re.sub(r'//.*?\n', '\n', json_str)
+        # Fix trailing commas
+        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+        return json_str
 
     def _execute_tool(self, action, inp, collected, scratchpad):
-        obs = "Error: Unknown tool"
-        
-        if action == "list_files":
-            files = self.retriever.list_all_files()
-            if not files:
-                obs = "Observation: No files found in this project. Is the repository indexed?"
-            else:
-                obs = f"Observation: Found {len(files)} files. Top files: " + ", ".join(files[:100])
-        elif action == "read_file":
-            # Fix: Handle case where input might be a list or multiline string
-            path = inp.strip()
-            data = self.retriever.fetch_file_content(path)
-            if data: 
-                collected.extend(data)
-                unit_names = [d['unit_name'] for d in data]
-                obs = f"Read {len(data)} units from {path}: {', '.join(unit_names)}"
-            else:
-                obs = f"Read {path}: File empty or not found."
-
-        elif action == "search_code":
-            data = self.retriever.search(inp)
-            if data: collected.extend(data)
-            obs = f"Found {len(data)} matches."
+        obs = "No results."
+        try:
+            if action == "list_files":
+                files = self.retriever.list_all_files()
+                obs = f"Repo contains {len(files)} files. First 50: {', '.join(files[:50])}"
+            elif action == "read_file":
+                path = str(inp).strip()
+                data = self.retriever.fetch_file_content(path)
+                if data:
+                    collected.extend(data)
+                    obs = f"Successfully read {path}."
+                else:
+                    obs = f"Error: File {path} not found in database. Check spelling or use list_files."
+            elif action == "search_code":
+                data = self.retriever.search(str(inp))
+                if data:
+                    collected.extend(data)
+                    # Deduplicate found files for the observation log
+                    found_files = list(set([d['file_path'] for d in data]))
+                    obs = f"Found {len(data)} matches in: {', '.join(found_files[:10])}"
+                else:
+                    obs = f"No results found for '{inp}'. Try broader keywords."
+        except Exception as e:
+            obs = f"Tool Error: {str(e)}"
             
-        scratchpad.append({"thought": "Executed tool", "action": f"{action}({inp})", "observation": obs})
+        scratchpad.append({"thought": "System Result", "action": f"{action}({inp})", "observation": obs})
         return obs
 
     def _get_system_prompt(self) -> str:
         return (
-            "You are Lumis. Find code to answer the user.\n"
+            "You are Lumis, a code analysis agent. Find ACTUAL code to answer the user.\n"
             "TOOLS:\n"
-            "1. list_files(): See file structure.\n"
-            "2. read_file(path): Read content of a specific file.\n"
-            "3. search_code(query): Search for functions/logic.\n\n"
-            "IMPORTANT: Respond in strict JSON format.\n"
-            "Example: {\"thought\": \"Checking file structure\", \"action\": \"list_files\", \"action_input\": \"\"}\n"
-            "Example: {\"thought\": \"Reading api.py\", \"action\": \"read_file\", \"action_input\": \"api.py\"}\n"
-            "When done, use {\"action\": \"final_answer\"}."
+            "1. list_files(): Use this if you don't know file paths.\n"
+            "2. read_file(path): Read full content of a specific file.\n"
+            "3. search_code(query): Search for code snippets (functions, classes).\n"
+            "4. final_answer: Call this when you have found enough code.\n\n"
+            "RESPONSE FORMAT (JSON ONLY):\n"
+            "{\n"
+            "  \"thought\": \"reasoning...\",\n"
+            "  \"confidence\": 0-100,\n"
+            "  \"action\": \"tool_name\",\n"
+            "  \"action_input\": \"parameter\"\n"
+            "}\n"
+            "RULE: If you cannot find the answer after searching, try 'list_files' to see if you have the wrong paths."
         )
 
     def _build_step_prompt(self, query, scratchpad):
-        trace = "\n".join([f"Act: {s['action']} | Res: {s['observation']}" for s in scratchpad])
-        return f"QUERY: {query}\nLOG:\n{trace}\nNext JSON:"
-
-    def _parse_response(self, text: str) -> Dict[str, Any]:
-        """Tries JSON first, then falls back to XML tool parsing."""
-        # 1. Try standard JSON extraction
-        clean_text = text.replace("```json", "").replace("```", "").strip()
-        json_match = re.search(r'(\{.*\})', clean_text, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group(1))
-            except:
-                pass
-
-        # 2. Fallback: Parse XML Tool Calls (e.g. <function=read_file>...)
-        # We only take the FIRST tool call found to avoid complex multi-threading logic
-        func_match = re.search(r'<function=(.*?)>', text)
-        if func_match:
-            action = func_match.group(1).strip()
-            # Extract parameter. Pattern: <parameter=path>value</parameter>
-            # We match ANY parameter name since models vary (path, query, etc.)
-            param_match = re.search(r'<parameter=.*?>(.*?)</parameter>', text, re.DOTALL)
-            action_input = param_match.group(1).strip() if param_match else ""
-            
-            return {
-                "thought": "Parsed from XML tool call",
-                "action": action,
-                "action_input": action_input
-            }
-            
-        # 3. Last Resort: Simple Keyword Matching
-        if "list_files" in text:
-            return {"thought": "Auto-recovery", "action": "list_files", "action_input": ""}
-            
-        return None
+        history = "\n".join([f"Action: {s['action']} -> {s['observation']}" for s in scratchpad])
+        return f"USER QUERY: {query}\n\nPROGRESS:\n{history}\n\nNEXT JSON:"
 
     def _update_history(self, q, a):
         if self.mode == "multi-turn":

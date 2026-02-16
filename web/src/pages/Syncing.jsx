@@ -5,79 +5,37 @@ export default function Syncing() {
   const [searchParams] = useSearchParams()
   const projectId = searchParams.get('project_id')
   const navigate = useNavigate()
-  
-  const [status, setStatus] = useState({ step: 'Initializing', logs: [], status: 'processing' })
+  const [status, setStatus] = useState({ logs: [], status: 'processing' })
   const bottomRef = useRef(null)
 
   useEffect(() => {
     if (!projectId) return
-
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`http://localhost:5000/api/ingest/status/${projectId}`)
         const data = await res.json()
-        
         setStatus(data)
         
-        // When complete, go back to Dashboard
-        if (data.status === 'completed') {
+        // REDIRECT LOGIC: Check both status AND logs for "DONE" signal
+        if (data.status === 'completed' || data.logs.some(l => l.includes('DONE'))) {
           clearInterval(interval)
-          setTimeout(() => navigate('/dashboard'), 1500)
+          setTimeout(() => navigate('/dashboard'), 2000)
         }
-      } catch (e) {
-        console.error("Polling error", e)
-      }
-    }, 1000)
-
+      } catch (e) { console.error(e) }
+    }, 1500)
     return () => clearInterval(interval)
   }, [projectId, navigate])
 
-  // Auto-scroll
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [status.logs])
-
   return (
-    <div style={{ 
-      height: '100vh', 
-      background: '#09090b', 
-      color: '#fff', 
-      display: 'flex', 
-      flexDirection: 'column', 
-      fontFamily: 'monospace' 
-    }}>
-      {/* Header */}
-      <div style={{ 
-        padding: '20px', 
-        borderBottom: '1px solid #27272a', 
-        display: 'flex', 
-        alignItems: 'center', 
-        gap: '12px' 
-      }}>
-        <div className={`status-dot ${status.status}`}></div>
-        <span style={{ fontSize: '1.1rem', fontWeight: 600 }}>
-          Lumis Engine — {status.step}
-        </span>
+    <div style={{ height: '100vh', background: '#09090b', color: '#fff', display: 'flex', flexDirection: 'column', fontFamily: 'monospace' }}>
+      <div style={{ padding: '20px', borderBottom: '1px solid #27272a', display: 'flex', justifyContent: 'space-between' }}>
+        <span>Lumis Engine Output</span>
+        <button onClick={() => navigate('/dashboard')} style={{background:'#27272a', color:'#fff', border:'none', cursor:'pointer'}}>Exit to Dashboard</button>
       </div>
-
-      {/* Terminal Output */}
       <div style={{ flex: 1, padding: '40px', overflowY: 'auto' }}>
-        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
-          {status.logs.map((log, i) => (
-            <div key={i} style={{ marginBottom: '8px', opacity: 0.9, lineHeight: '1.6' }}>
-              <span style={{ color: '#10b981', marginRight: '10px' }}>➜</span>
-              {log}
-            </div>
-          ))}
-          <div ref={bottomRef} />
-        </div>
+        {status.logs.map((log, i) => <div key={i} style={{marginBottom:'8px'}}>{log}</div>)}
+        <div ref={bottomRef} />
       </div>
-
-      <style>{`
-        .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 10px #fbbf24; }
-        .status-dot.completed { background: #10b981; box-shadow: 0 0 10px #10b981; }
-        .status-dot.failed { background: #ef4444; box-shadow: 0 0 10px #ef4444; }
-      `}</style>
     </div>
   )
 }

@@ -34,13 +34,15 @@ def enrich_block(block):
     }
 
 def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
-    repo_path = f"./temp_repos/{project_id}"
+    # FIX: Get absolute path for consistent relative path generation across different OS/environments
+    repo_path = os.path.abspath(f"./temp_repos/{project_id}")
     
     if progress_callback: progress_callback("CLONING", f"Cloning {repo_url}...")
     if os.path.exists(repo_path):
         repo = git.Repo(repo_path)
         repo.remotes.origin.pull()
     else:
+        os.makedirs(os.path.dirname(repo_path), exist_ok=True)
         repo = git.Repo.clone_from(repo_url, repo_path)
 
     parser = AdvancedCodeParser()
@@ -53,9 +55,11 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
         if '.git' in root: continue
         
         for file in files:
-            file_path = os.path.join(root, file)
+            # FIX: Use absolute file path for filtering and processing
+            file_path = os.path.abspath(os.path.join(root, file))
             if not parser.filter_process(file_path): continue
 
+            # rel_path must be consistent for retriever.py lookup in the database
             rel_path = os.path.relpath(file_path, repo_path)
             blocks = parser.parse_file(file_path)
             if not blocks: continue
@@ -63,14 +67,17 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
             last_mod, author = get_git_metadata(repo_path, file_path, repo)
 
             for block in blocks:
-                if progress_callback: progress_callback("PROCESSING", f"Analyzing {block.identifier}")
+                # FIX: Overwrite the identifier to ensure it uses the consistent rel_path 
+                # rather than local temporary directory paths.
+                clean_id = f"{rel_path}::{block.parent_block if block.parent_block else 'root'}::{block.name}"
+                
+                if progress_callback: progress_callback("PROCESSING", f"Analyzing {clean_id}")
 
                 # 1. ENRICH & PREPARE
                 enrichment = enrich_block(block)
                 
-                # We use the identifier from the parser which is already unique
                 unit_data = {
-                    "identifier": block.identifier, 
+                    "identifier": clean_id, 
                     "type": block.type,
                     "file_path": rel_path,
                     "content": block.content,
@@ -81,19 +88,18 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     "author_email": author
                 }
 
-                # 2. SAVE UNIT (Using your db_client helper)
+                # 2. SAVE UNIT (Using db_client helper)
                 save_memory_unit(project_id, unit_data)
-                current_scan_identifiers.append(block.identifier)
+                current_scan_identifiers.append(clean_id)
 
-                # 3. SAVE EDGES (Using your db_client helper)
+                # 3. SAVE EDGES
                 if block.calls:
-                    save_edges(project_id, block.identifier, block.calls, edge_type="calls")
+                    save_edges(project_id, clean_id, block.calls, edge_type="calls")
                 if block.imports:
-                    # Extracts just the module names for the edges
                     import_names = [imp.module for imp in block.imports]
-                    save_edges(project_id, block.identifier, import_names, edge_type="imports")
+                    save_edges(project_id, clean_id, import_names, edge_type="imports")
                 if block.bases:
-                    save_edges(project_id, block.identifier, block.bases, edge_type="inherits")
+                    save_edges(project_id, clean_id, block.bases, edge_type="inherits")
 
     # 4. CLEANUP orphaned units
     if progress_callback: progress_callback("CLEANUP", "Removing orphan blocks...")
@@ -106,5 +112,8 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
 
         for dead_id in deleted_ids:
             supabase.table("memory_units").delete().eq("project_id", project_id).eq("unit_name", dead_id).execute()
+
+    latest_commit_id = repo.head.commit.hexsha
+    supabase.table("projects").update({"last_commit": latest_commit_id}).eq("id", project_id).execute()
 
     if progress_callback: progress_callback("DONE", "Ingestion complete.")
