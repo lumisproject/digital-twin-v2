@@ -18,6 +18,7 @@ class LumisAgent:
         self.logger = logging.getLogger(__name__)
 
     def ask(self, user_query: str, reasoning_enabled: bool = False) -> str:
+        print(self.mode)
         if self.mode == "single-turn":
             self.conversation_history = []
 

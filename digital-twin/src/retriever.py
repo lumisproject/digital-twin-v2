@@ -42,7 +42,7 @@ class GraphRetriever:
             # 3. Prepare Params for Hybrid Search
             params = {
                 "query_embedding": query_vector,
-                "query_text": augmented_query, # Use augmented query for keyword match too
+                "query_text": f"{query} {augmented_query}",
                 "match_threshold": 0.05, 
                 "match_count": limit,
                 "filter_project_id": self.project_id

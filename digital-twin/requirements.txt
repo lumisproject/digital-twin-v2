@@ -8,15 +8,6 @@ gitpython
 
 # Code Parsing
 tree-sitter-language-pack
-#tree-sitter-python
-#tree-sitter-javascript
-#tree-sitter-typescript
-#tree-sitter-java
-#tree-sitter-go
-#tree-sitter-c
-#tree-sitter-cpp
-#tree-sitter-rust
-#tree-sitter-c-sharp
 libcst
 
 # Embeddings & Vector Store
@@ -28,17 +19,10 @@ chromadb
 rank-bm25
 networkx
 
-# LLM Integration
-openai
-anthropic
-tiktoken
-
 # API
 fastapi
 uvicorn
 pydantic
-flask
-flask-cors
 python-multipart
 
 # Utilities
