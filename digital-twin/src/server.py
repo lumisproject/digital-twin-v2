@@ -46,16 +46,24 @@ def update_progress(project_id, task, message):
         ingestion_state[project_id] = {"status": "processing", "logs": [], "step": "Starting"}
     
     state = ingestion_state[project_id]
-    state["step"] = task
+
+    if task == "STARTING":
+        state["status"]="PROGRESSING"
+        state["logs"]=[]
+        state["error"]=None
+    
+    state["step"]=task
+
     if message:
         state["logs"].append(f"[{task}] {message}")
-    
-    # "DONE" task explicitly triggers the frontend redirection
+
     if task == "DONE":
         state["status"] = "completed"
     elif task == "Error":
         state["status"] = "failed"
         state["error"] = message
+    elif task != "STARTING": 
+        state["status"] = "PROCESSING"
 
 # --- ENDPOINTS ---
 
@@ -63,7 +71,6 @@ def update_progress(project_id, task, message):
 async def github_webhook(user_id: str, project_id: str, request: Request, background_tasks: BackgroundTasks):
     try:
         # 1. Fetch project safely
-        # Use maybe_single() to avoid crashing if the ID is wrong
         res = supabase.table("projects") \
             .select("*") \
             .eq("id", project_id) \
@@ -85,14 +92,12 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
 
         # 3. Handle Push Events
         ref = payload.get("ref", "")
-        # Only trigger for pushes to branches (ignore tags/deletions)
         if "refs/heads/" in ref:
             new_sha = payload.get("after")
             repo_url = payload.get("repository", {}).get("clone_url")
             
             logger.info(f"Webhook Trigger: Push detected on {ref} (Commit: {new_sha[:7]})")
 
-            # Update status immediately so the Dashboard polls and opens the Wizard
             update_progress(
                 project_id, 
                 "STARTING", 
@@ -100,7 +105,6 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
             )
 
             # 4. Fire and forget: Run the full ingestion in the background
-            # Adapted to match ingest_repo signature and update_progress
             background_tasks.add_task(
                 ingest_repo,
                 repo_url=repo_url,
