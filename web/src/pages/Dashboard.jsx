@@ -69,8 +69,9 @@ export default function Dashboard() {
       try {
         const res = await fetch(`http://localhost:5000/api/ingest/status/${projectData.id}`)
         const data = await res.json()
-        
-        // Handle Agent Thought Streaming during Chat
+        if (['PROCESSING', 'STARTING'].includes(data.status)) {
+             navigate(`/syncing?project_id=${projectData.id}`)
+        }
         if (chatLoading && data.logs && data.logs.length > 0) {
           const lastThought = data.logs.filter(l => l.includes('🧠') || l.includes('🤔')).pop()
           if (lastThought) {

@@ -18,12 +18,23 @@ def get_git_metadata(repo_path, file_path, repo_obj):
         return None, None
 
 def enrich_block(block):
-    """Generates summary and embedding."""
-    summary = get_llm_completion(
-        "Summarize this code/text logic in 1 sentence. If boilerplate return SKIP.", 
-        f"Content:\n{block.content[:2000]}"
+    """Generates a deep functional summary and embedding for every code unit."""
+    
+    system_instruction = (
+        "You are a Senior Technical Architect. Summarize the provided code unit in 1 concise sentence. "
+        "Focus on its functional purpose and its role within the system. "
+        "Do NOT say 'This code...' or 'This function...'. Start directly with an action verb. "
+        "Provide a meaningful description even for boilerplate or setup code."
     )
-    if not summary or "SKIP" in summary: return None
+    
+    summary = get_llm_completion(
+        system_instruction, 
+        f"File Path: {block.file_path}\nUnit Name: {block.name}\nContent:\n{block.content[:2000]}"
+    )
+    
+    if not summary:
+        return None
+        
     return {
         "summary": summary,
         "embedding": get_embedding(block.content),
@@ -45,8 +56,6 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
 
         parser = AdvancedCodeParser()
         current_scan_identifiers = []
-
-        # NOTE: Do NOT delete all edges here. We handle them per-unit.
 
         for root, _, files in os.walk(repo_path):
             if '.git' in root: continue
@@ -70,7 +79,6 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     existing_hash = get_unit_footprint(project_id, clean_id)
                     
                     if existing_hash == current_hash:
-                        # CONTENT UNCHANGED: Keep old DB entry (preserves old timestamp)
                         current_scan_identifiers.append(clean_id)
                         continue 
 
@@ -84,7 +92,7 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                         "type": block.type,
                         "file_path": rel_path,
                         "content": block.content,
-                        "summary": enrichment['summary'] if enrichment else "Boilerplate",
+                        "summary": enrichment['summary'] if enrichment else "Logic implementation for " + block.name,
                         "footprint": current_hash,
                         "embedding": enrichment['embedding'] if enrichment else None,
                         "last_modified_at": last_mod.isoformat() if last_mod else None,
@@ -101,9 +109,18 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
 
         # 4. CLEANUP ORPHANS
         if progress_callback: progress_callback("CLEANUP", "Removing deleted files...")
-        # (This part requires fetching all IDs from DB and diffing with current_scan_identifiers)
-        # For brevity, assuming this logic exists or is acceptable to skip for now.
-
+        db_units = supabase.table("memory_units").select("unit_name").eq("project_id", project_id).execute()
+        db_unit_names = {u['unit_name'] for u in db_units.data}
+        
+        # Identify orphans (in DB but not in current_scan_identifiers)
+        orphans = list(db_unit_names - set(current_scan_identifiers))
+        
+        if orphans:
+            print(f"🗑️ Deleting {len(orphans)} orphaned units...")
+            
+            # 1. Delete associated edges where the orphan is the SOURCE
+            supabase.table("graph_edges").delete().eq("project_id", project_id).in_("source_unit_name", orphans).execute()
+            supabase.table("memory_units").delete().eq("project_id", project_id).in_("unit_name", orphans).execute()
         # 5. RISK INTELLIGENCE TRIGGER
         if progress_callback: progress_callback("INTELLIGENCE", "Analyzing Predictive Risks...")
         

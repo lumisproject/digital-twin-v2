@@ -95,7 +95,7 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
         if "refs/heads/" in ref:
             new_sha = payload.get("after")
             repo_url = payload.get("repository", {}).get("clone_url")
-            
+            supabase.table("projects").update({"last_commit": new_sha}).eq("id", project_id).execute()
             logger.info(f"Webhook Trigger: Push detected on {ref} (Commit: {new_sha[:7]})")
 
             update_progress(
