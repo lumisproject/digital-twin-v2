@@ -6,7 +6,7 @@ from tree_sitter_language_pack import get_parser, SupportedLanguage
 # --- CONFIGURATION ---
 IGNORE_EXT = (
     '.png', '.jpg', '.jpeg', '.gif', '.exe', '.dll', '.pyc', '.o', '.obj', 
-    '.css', '.svg', '.md', '.gitignore', '.csv', '.json', '.yaml', '.yml', 
+    '.css', '.svg', '.gitignore', '.csv', '.json', '.yaml', '.yml', 
     '.txt', '.lock', '.xml', '.map', '.ico', '.woff', '.woff2', '.ttf'
 )
 
@@ -86,7 +86,7 @@ class AdvancedCodeParser:
             "c": "c",
             "cs": "c_sharp",
             "rb": "ruby",
-            "php": "php"
+            "php": "php",
         }
         lang = mapping.get(ext)
         if lang in self.supported_langs:
@@ -112,6 +112,21 @@ class AdvancedCodeParser:
             except Exception as e:
                 print(f"Error reading {file_path}: {e}")
                 return []
+        
+        _, ext = os.path.splitext(file_path)
+        if ext.lower() == ".md":
+            text_content = content.decode('utf-8', errors='ignore')
+            file_name = os.path.basename(file_path)
+            return [CodeBlock(
+                name=file_name,
+                type="module", 
+                content=text_content,
+                start_line=0,
+                end_line=len(text_content.splitlines()),
+                file_path=os.path.relpath(file_path),
+                identifier=f"{os.path.relpath(file_path)}::root::{file_name}",
+                parent_block=None
+            )]
 
         parser = get_parser(lang)
         if not parser:

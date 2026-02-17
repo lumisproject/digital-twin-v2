@@ -14,6 +14,12 @@ supabase: Client = create_client(url, key)
 
 # --- READ OPERATIONS ---
 
+def get_project_data(project_id):
+    """Fetches all units and edges to build the local analysis graph."""
+    units = supabase.table("memory_units").select("*").eq("project_id", project_id).execute()
+    edges = supabase.table("graph_edges").select("*").eq("project_id", project_id).execute()
+    return units.data, edges.data
+
 def get_project_risks(project_id):
     """Fetches active risk alerts for the project."""
     # Ensure 'project_risks' table exists in your DB or this will fail
@@ -26,18 +32,11 @@ def get_project_risks(project_id):
     return response.data
 
 # --- WRITE OPERATIONS ---
-
 def save_risk_alerts(project_id, risks):
-    if not risks:
-        return
-    
-    # Clean up old legacy conflicts before inserting new ones to avoid noise
-    supabase.table("project_risks")\
-        .delete()\
-        .eq("project_id", project_id)\
-        .eq("risk_type", "Legacy Conflict")\
-        .execute()
-        
+    """Stores identified risks in the project_risks table."""
+    if not risks: return
+    # Clear old legacy risks to avoid duplicates
+    supabase.table("project_risks").delete().eq("project_id", project_id).eq("risk_type", "Legacy Conflict").execute()
     supabase.table("project_risks").insert(risks).execute()
 
 def update_unit_risk_scores(updates):

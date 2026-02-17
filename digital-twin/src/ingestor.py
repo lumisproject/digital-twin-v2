@@ -3,6 +3,7 @@ import git
 from src.services import get_llm_completion, get_embedding, generate_footprint
 from src.db_client import supabase, save_memory_unit, save_edges
 from src.indexing.parser import AdvancedCodeParser
+from src.risk_engine import calculate_predictive_risks
 
 def get_git_metadata(repo_path, file_path, repo_obj=None):
     try:
@@ -18,10 +19,12 @@ def get_git_metadata(repo_path, file_path, repo_obj=None):
 
 def enrich_block(block):
     """Generates summary and embedding for a CodeBlock."""
-    system_msg = """You are a technical code analyst. Summarize the core logic in one clear sentence.
-    Focus on WHAT it does and its algorithmic complexity. If boilerplate, return: SKIP"""
+    system_msg = """You are a technical analyst. 
+    If the content is CODE: Summarize the core logic in one clear sentence focusing on WHAT it does and its algorithmic complexity.
+    If the content is DOCUMENTATION (like a README): Summarize the project's purpose, main features, or setup instructions in one clear sentence.
+    If the content is pure boilerplate or empty, return: SKIP"""
     
-    context = f"File: {block.file_path}\nName: {block.name}\nType: {block.type}\nCode:\n{block.content}"
+    context = f"File: {block.file_path}\nName: {block.name}\nType: {block.type}\nContent:\n{block.content}"
     summary = get_llm_completion(system_msg, context)
     
     if not summary or "SKIP" in summary.upper():
@@ -34,7 +37,6 @@ def enrich_block(block):
     }
 
 def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
-    # FIX: Get absolute path for consistent relative path generation across different OS/environments
     repo_path = os.path.abspath(f"./temp_repos/{project_id}")
     
     if progress_callback: progress_callback("CLONING", f"Cloning {repo_url}...")
@@ -48,18 +50,16 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
     parser = AdvancedCodeParser()
     current_scan_identifiers = []
 
-    # Clear existing edges to prevent stale graph connections
     supabase.table("graph_edges").delete().eq("project_id", project_id).execute()
 
     for root, _, files in os.walk(repo_path):
         if '.git' in root: continue
         
         for file in files:
-            # FIX: Use absolute file path for filtering and processing
             file_path = os.path.abspath(os.path.join(root, file))
+            # Ensure your parser.filter_process no longer blocks .md files
             if not parser.filter_process(file_path): continue
 
-            # rel_path must be consistent for retriever.py lookup in the database
             rel_path = os.path.relpath(file_path, repo_path)
             blocks = parser.parse_file(file_path)
             if not blocks: continue
@@ -67,13 +67,13 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
             last_mod, author = get_git_metadata(repo_path, file_path, repo)
 
             for block in blocks:
-                # FIX: Overwrite the identifier to ensure it uses the consistent rel_path 
-                # rather than local temporary directory paths.
-                clean_id = f"{rel_path}::{block.parent_block if block.parent_block else 'root'}::{block.name}"
+                # Proposed Logic Update for Identifiers:
+                # We use 'root' if parent_block is None (common for READMEs or global variables)
+                parent = block.parent_block if block.parent_block else 'root'
+                clean_id = f"{rel_path}::{parent}::{block.name}"
                 
                 if progress_callback: progress_callback("PROCESSING", f"Analyzing {clean_id}")
 
-                # 1. ENRICH & PREPARE
                 enrichment = enrich_block(block)
                 
                 unit_data = {
@@ -88,11 +88,10 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     "author_email": author
                 }
 
-                # 2. SAVE UNIT (Using db_client helper)
                 save_memory_unit(project_id, unit_data)
                 current_scan_identifiers.append(clean_id)
 
-                # 3. SAVE EDGES
+                # Edge saving remains the same; it will naturally skip empty lists for READMEs
                 if block.calls:
                     save_edges(project_id, clean_id, block.calls, edge_type="calls")
                 if block.imports:
@@ -116,4 +115,14 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
     latest_commit_id = repo.head.commit.hexsha
     supabase.table("projects").update({"last_commit": latest_commit_id}).eq("id", project_id).execute()
 
-    if progress_callback: progress_callback("DONE", "Ingestion complete.")
+    if progress_callback: 
+        progress_callback("INTELLIGENCE", "Calculating predictive risks using Graph Analysis...")
+
+    try:
+        risk_count = calculate_predictive_risks(project_id)
+        if progress_callback: 
+            progress_callback("DONE", f"Ingestion complete. {risk_count} risks identified.")
+    except Exception as e:
+        print(f"Risk analysis failed: {e}")
+        if progress_callback: 
+            progress_callback("DONE", "Ingestion complete (Risk analysis failed).")
