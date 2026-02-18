@@ -151,7 +151,7 @@ async def chat_endpoint(req: ChatRequest):
 @app.post("/api/ingest")
 async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     try:
-        existing = supabase.table("projects").select("id, last_commit").eq("repo_url", req.repo_url).execute()
+        existing = supabase.table("projects").select("id, last_commit").eq("repo_url", req.repo_url).eq("user_id", req.user_id).execute()
         if existing.data:
             project_id = existing.data[0]['id']
         else:
