@@ -184,6 +184,11 @@ async def get_risks_endpoint(project_id: str):
     risks = get_project_risks(project_id)
     return {"status": "success", "risks": risks if risks else []}
 
+@app.get("/api/status")
+async def health_check():
+    """Simple health check for the frontend."""
+    return {"status": "ok", "service": "Lumis Digital Twin"}
+
 if __name__ == "__main__":
     import uvicorn
     # Use the port defined by your environment or default to 5000

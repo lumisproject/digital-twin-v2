@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from src.services import get_llm_completion
 from src.retriever import GraphRetriever
 from src.answer_generator import AnswerGenerator
+from src.query_processor import QueryProcessor
 
 class LumisAgent:
     def __init__(self, project_id: str, mode: str = "multi-turn", max_steps: int = 4):
@@ -13,6 +14,7 @@ class LumisAgent:
         self.mode = mode
         self.retriever = GraphRetriever(project_id)
         self.generator = AnswerGenerator(project_id)
+        self.query_processor = QueryProcessor()
         self.max_steps = max_steps
         self.conversation_history: List[Dict[str, str]] = []
         self.logger = logging.getLogger(__name__)
@@ -28,9 +30,16 @@ class LumisAgent:
         
         print(f"\n🤖 LUMIS: {user_query}")
 
+        # --- FIX 1: Process query ONCE before the loop ---
+        processed_query = self.query_processor.process(user_query, self.conversation_history)
+        print(f"🎯 Intent: {processed_query.intent}")
+        if processed_query.pseudocode_hints:
+            print(f"💡 Pseudocode Hint Generated")
+
         for step in range(self.max_steps):
-            # FIX: Pass conversation history to the prompt builder
-            prompt = self._build_step_prompt(user_query, scratchpad)
+            
+            # --- FIX 2: Pass 'processed_query' object instead of raw string ---
+            prompt = self._build_step_prompt(processed_query, scratchpad)
             
             # 1. Get LLM response
             response_text = get_llm_completion(
@@ -39,8 +48,7 @@ class LumisAgent:
                 reasoning_enabled=reasoning_enabled
             )
             
-            # 2. Robust Parsing with Fallback
-            # Pass user_query so we can default to searching if parsing fails
+            # 2. Robust Parsing
             data = self._parse_response(response_text, fallback_query=user_query)
             
             thought = data.get("thought", "Analyzing...")
@@ -49,19 +57,18 @@ class LumisAgent:
             
             print(f"🤔 Step {step+1} ({confidence}%): {thought}")
 
-            # 3. Smart Termination
-            if confidence >= 85 or action == "final_answer":
+            if confidence >= 95 or action == "final_answer":
                 break
 
-            # 4. Tool Execution
             if not action or action == "none": 
                 print("⚠️ No action generated. Stopping.")
                 break
-                
-            obs = self._execute_tool(action, data.get("action_input"), collected_elements, scratchpad)
-            if action == "list_files": repo_structure = obs
+            
+            # OPTIONAL: You can inject the rewritten query here if the agent chose 'search_code'
+            # but usually it's better to let the agent see the hint in the prompt and decide.
+            obs = self._execute_tool(action, data.get("action_input"), collected_elements, scratchpad,processed_query)
+            if action == "list_files": repo_structure = obs 
 
-        # Generate final answer with whatever was found
         result = self.generator.generate(
             query=user_query, 
             collected_elements=collected_elements, 
@@ -70,6 +77,30 @@ class LumisAgent:
         )
         self._update_history(user_query, result['answer'])
         return result['answer']
+
+    # --- FIX 3: Update this helper to inject the hints into the LLM's context ---
+    def _build_step_prompt(self, processed_query, scratchpad):
+        history_text = ""
+        if self.conversation_history and len(self.conversation_history) > 0:
+            recent_msgs = self.conversation_history[-6:]
+            history_text = "CONVERSATION HISTORY:\n" + "\n".join(
+                [f"{m['role'].upper()}: {m['content']}" for m in recent_msgs]
+            ) + "\n\n"
+            
+        progress = "\n".join([f"Action: {s['action']} -> {s['observation']}" for s in scratchpad])
+        
+        # Inject the processor insights
+        query_context = f"USER QUERY: {processed_query.original}"
+        
+        insights = []
+        if processed_query.rewritten_query:
+             insights.append(f"Search Hint: Try searching for '{processed_query.rewritten_query}'")
+        if processed_query.pseudocode_hints:
+             insights.append(f"Implementation Hint:\n{processed_query.pseudocode_hints}")
+             
+        insight_text = "\n\n".join(insights)
+
+        return f"{history_text}{query_context}\n\n{insight_text}\n\nPROGRESS:\n{progress}\n\nNEXT JSON:"
 
     def _parse_response(self, text: str, fallback_query: str = "") -> Dict[str, Any]:
         """
@@ -121,12 +152,15 @@ class LumisAgent:
         json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
         return json_str
 
-    def _execute_tool(self, action, inp, collected, scratchpad):
+    # In src/agent.py -> LumisAgent class
+
+    def _execute_tool(self, action, inp, collected, scratchpad, processed_query=None):
         obs = "No results."
         try:
             if action == "list_files":
                 files = self.retriever.list_all_files()
                 obs = f"Repo contains {len(files)} files. First 50: {', '.join(files[:50])}"
+                
             elif action == "read_file":
                 path = str(inp).strip()
                 data = self.retriever.fetch_file_content(path)
@@ -135,15 +169,31 @@ class LumisAgent:
                     obs = f"Successfully read {path}."
                 else:
                     obs = f"Error: File {path} not found in database. Check spelling or use list_files."
+                    
             elif action == "search_code":
-                data = self.retriever.search(str(inp))
+                search_input = str(inp)
+                
+                # If we have a high-quality rewritten query from the processor, 
+                # we combine it with the agent's input to maximize recall.
+                if processed_query and processed_query.rewritten_query:
+                    # Logic: "Agent's specific term" + "Processor's technical keywords"
+                    search_input = f"{search_input} {processed_query.rewritten_query}"
+                
+                # If there are pseudocode hints (for implementation tasks), add them too
+                if processed_query and processed_query.pseudocode_hints:
+                    search_input += f" {processed_query.pseudocode_hints}"
+                
+                print(f"🔎 Executing Enhanced Search: {search_input[:100]}...")
+
+                data = self.retriever.search(search_input)
+                
                 if data:
                     collected.extend(data)
-                    # Deduplicate found files for the observation log
                     found_files = list(set([d['file_path'] for d in data]))
                     obs = f"Found {len(data)} matches in: {', '.join(found_files[:10])}"
                 else:
                     obs = f"No results found for '{inp}'. Try broader keywords."
+                    
         except Exception as e:
             obs = f"Tool Error: {str(e)}"
             
@@ -151,35 +201,34 @@ class LumisAgent:
         return obs
 
     def _get_system_prompt(self) -> str:
-        return (
-            "You are Lumis, a code analysis agent. Find ACTUAL code to answer the user.\n"
-            "TOOLS:\n"
-            "1. list_files(): Use this if you don't know file paths.\n"
-            "2. read_file(path): Read full content of a specific file.\n"
-            "3. search_code(query): Search for code snippets (functions, classes).\n"
-            "4. final_answer: Call this when you have found enough code.\n\n"
-            "RESPONSE FORMAT (JSON ONLY):\n"
-            "{\n"
-            "  \"thought\": \"reasoning...\",\n"
-            "  \"confidence\": 0-100,\n"
-            "  \"action\": \"tool_name\",\n"
-            "  \"action_input\": \"parameter\"\n"
-            "}\n"
-            "RULE: If you cannot find the answer after searching, try 'list_files' to see if you have the wrong paths."
-        )
-
-    def _build_step_prompt(self, query, scratchpad):
-        # FIX: Include conversation history for context-aware reasoning
-        history_text = ""
-        if self.conversation_history and len(self.conversation_history) > 0:
-            # Use last 6 messages to keep context relevant but concise
-            recent_msgs = self.conversation_history[-6:]
-            history_text = "CONVERSATION HISTORY:\n" + "\n".join(
-                [f"{m['role'].upper()}: {m['content']}" for m in recent_msgs]
-            ) + "\n\n"
-            
-        progress = "\n".join([f"Action: {s['action']} -> {s['observation']}" for s in scratchpad])
-        return f"{history_text}USER QUERY: {query}\n\nPROGRESS:\n{progress}\n\nNEXT JSON:"
+            return (
+                "You are Lumis, a 'Scouting-First' code analysis agent.\n"
+                "Your goal is to answer user queries with PRECISE code evidence.\n\n"
+                
+                "*** CORE WORKFLOW ***\n"
+                "1. SCOUT: Use `list_files` or `search_code` to find RELEVANT FILE PATHS. Do not read files randomly.\n"
+                "2. VERIFY: Use the provided 'Search Hint' or 'Pseudocode' to refine your search if initial results are poor.\n"
+                "3. READ: Only call `read_file` when you are 80%+ sure a file contains the answer.\n"
+                "4. ANSWER: Call `final_answer` once you have the code snippets in your context.\n\n"
+                
+                "*** TOOL USAGE ***\n"
+                "- list_files(): Call this FIRST if you don't know the directory structure.\n"
+                "- search_code(query): Semantic search for logic/concepts. Use specific technical terms.\n"
+                "- read_file(path): Loads the FULL content. Expensive! Use sparingly on targeted files.\n"
+                "- final_answer: Delivers the response to the user.\n\n"
+                
+                "*** RESPONSE FORMAT (Strict JSON) ***\n"
+                "{\n"
+                "  \"thought\": \"I see the user wants to find auth logic. The file structure shows a 'src/auth' folder...\",\n"
+                "  \"confidence\": <0-100>,\n"
+                "  \"action\": \"<tool_name>\",\n"
+                "  \"action_input\": \"<argument>\"\n"
+                "}\n\n"
+                "*** CRITICAL OUTPUT RULES ***\n"
+                "1. DO NOT output any conversational text, introductions, or explanations.\n"
+                "2. Output ONLY the raw JSON object. Do not wrap it in markdown code blocks.\n"
+                "3. Ensure the JSON is valid (no trailing commas, double quotes for keys)."
+            )
 
     def _update_history(self, q, a):
         if self.mode == "multi-turn":
