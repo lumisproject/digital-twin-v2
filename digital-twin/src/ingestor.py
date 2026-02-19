@@ -1,21 +1,38 @@
 import os
 import git
 import time
+from datetime import datetime, timezone # <-- ADDED IMPORT
 from tree_sitter_language_pack import get_parser
 from src.services import get_llm_completion, get_embedding, generate_footprint
 from src.db_client import supabase, save_memory_unit, save_edges, get_unit_footprint
 from src.indexing.parser import AdvancedCodeParser
 from src.risk_engine import calculate_predictive_risks
 
-def get_git_metadata(repo_path, file_path, repo_obj):
+# <-- REPLACED get_git_metadata WITH get_function_metadata
+def get_function_metadata(repo_path, file_path, start_line, end_line, repo_obj):
+    """Uses git blame to find the last time specific lines of a function were modified."""
     try:
         rel_path = os.path.relpath(file_path, repo_path)
-        # Get the last commit that actually touched this file
-        commits = list(repo_obj.iter_commits(paths=rel_path, max_count=1))
-        if not commits: return None, None
-        return commits[0].committed_datetime, commits[0].author.email
-    except:
-        return None, None
+        
+        # Tree-sitter is 0-indexed, git blame is 1-indexed
+        s_line = max(1, start_line + 1)
+        e_line = max(s_line, end_line + 1) 
+        
+        blame = repo_obj.blame('HEAD', rel_path, L=f'{s_line},{e_line}')
+        
+        latest_commit = None
+        for commit, _ in blame:
+            if not latest_commit or commit.committed_datetime > latest_commit.committed_datetime:
+                latest_commit = commit
+                
+        if not latest_commit: 
+            return datetime.now(timezone.utc), "unknown"
+        
+        print(latest_commit.committed_datetime, latest_commit.author.email)
+        return latest_commit.committed_datetime, latest_commit.author.email
+    except Exception:
+        # Fallback for newly added files/lines not yet committed
+        return datetime.now(timezone.utc), "unknown"
 
 def enrich_block(block):
     """Generates a deep functional summary and embedding for every code unit."""
@@ -54,6 +71,10 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
             os.makedirs(os.path.dirname(repo_path), exist_ok=True)
             repo = git.Repo.clone_from(repo_url, repo_path)
 
+        latest_sha = repo.head.object.hexsha
+        supabase.table("projects").update({"last_commit": latest_sha}).eq("id", project_id).execute()
+        if progress_callback: progress_callback("METADATA", f"Tracking commit: {latest_sha[:7]}")
+        
         parser = AdvancedCodeParser()
         current_scan_identifiers = []
 
@@ -68,8 +89,6 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                 blocks = parser.parse_file(file_path)
                 if not blocks: continue
                 
-                last_mod, author = get_git_metadata(repo_path, file_path, repo)
-
                 for block in blocks:
                     parent = block.parent_block if block.parent_block else 'root'
                     clean_id = f"{rel_path}::{parent}::{block.name}"
@@ -84,6 +103,9 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
 
                     # 2. CONTENT CHANGED: Reprocess
                     if progress_callback: progress_callback("PROCESSING", f"Updating {block.name}...")
+                    
+                    # <-- ADDED HERE: Calculate accurate line-level git data per function
+                    last_mod, author = get_function_metadata(repo_path, file_path, block.start_line, block.end_line, repo)
                     
                     enrichment = enrich_block(block)
                     
@@ -121,6 +143,7 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
             # 1. Delete associated edges where the orphan is the SOURCE
             supabase.table("graph_edges").delete().eq("project_id", project_id).in_("source_unit_name", orphans).execute()
             supabase.table("memory_units").delete().eq("project_id", project_id).in_("unit_name", orphans).execute()
+
         # 5. RISK INTELLIGENCE TRIGGER
         if progress_callback: progress_callback("INTELLIGENCE", "Analyzing Predictive Risks...")
         

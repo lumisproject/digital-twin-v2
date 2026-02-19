@@ -2,28 +2,29 @@ from datetime import datetime, timezone
 from src.db_client import get_project_data, save_risk_alerts, update_unit_risk_scores
 from src.services import get_llm_completion
 
-def analyze_conflict_with_llm(source_name, source_code, target_name, target_code):
+def analyze_conflict_with_llm(source_name, source_summary, target_name, target_summary):
     """
     Uses the LLM to determine if the interaction between new and legacy code is dangerous.
+    NOTE: Using 'summary' instead of full code prevents API cost blowouts.
     """
     system_prompt = (
         "You are a Senior Software Architect specializing in legacy modernization. "
         "Analyze the interaction between a RECENTLY MODIFIED function and a LEGACY function (unchanged for months). "
-        "Predict if the recent changes might break assumptions in the legacy code. "
-        "Be concise. Focus on data types, null handling, and logic assumptions."
+        "Predict if the recent changes might break assumptions in the legacy code based on their summaries. "
+        "Be concise. Focus on data flow, responsibilities, and architecture assumptions."
     )
     
     user_prompt = (
         f"--- RECENT CODE ({source_name}) ---\n"
-        f"{source_code}\n\n"
+        f"Summary: {source_summary}\n\n"
         f"--- LEGACY CODE ({target_name}) ---\n"
-        f"{target_code}\n\n"
-        "TASK: Explain the potential risk in 1-2 sentences. If the risk is generic, say 'Standard dependency risk'. "
-        "If you see a specific mismatch (e.g. arguments, types), explain it."
+        f"Summary: {target_summary}\n\n"
+        "TASK: Explain the potential risk in 1-2 sentences. If the risk is generic, say 'Standard dependency risk'."
     )
     
     analysis = get_llm_completion(system_prompt, user_prompt)
     return analysis if analysis else "Standard dependency risk detected."
+
 
 def calculate_predictive_risks(project_id):
     print(f"Starting Risk Analysis for {project_id}...")
@@ -33,86 +34,76 @@ def calculate_predictive_risks(project_id):
     if not units:
         return 0
 
-    # 2. Define Thresholds
     now = datetime.now(timezone.utc)
-    LEGACY_THRESHOLD_DAYS = 120  # ~4 months
-    RECENT_THRESHOLD_DAYS = 30   # 1 month
+    unit_map = {}
     
-    legacy_units = {}
-    recent_units = set()
-    unit_map = {u['unit_name']: u for u in units}
-    
+    # 2. Map all units and calculate exact age in days
     for unit in units:
-        if not unit.get('last_modified_at'):
-            continue
+        if not unit.get('last_modified_at'): continue
             
         try:
             last_mod = datetime.fromisoformat(unit['last_modified_at'].replace('Z', '+00:00'))
+            unit['age_days'] = (now - last_mod).days
+            unit_map[unit['unit_name']] = unit
         except ValueError:
             continue 
-            
-        age_days = (now - last_mod).days
-        
-        if age_days > LEGACY_THRESHOLD_DAYS:
-            legacy_units[unit['unit_name']] = unit
-        elif age_days < RECENT_THRESHOLD_DAYS:
-            recent_units.add(unit['unit_name'])
 
-    print("legacy_units: ", legacy_units)
-    print("\nrecent_units: ", recent_units)
-
-    # 4. Detect Conflicts (Edges)
+    # 3. Detect Conflicts (Edges) using Relative Age Difference
     risks = []
     risk_scores = {}
     
     print(f"Analyzing {len(edges)} dependencies for conflicts...")
     
     for edge in edges:
-        source = edge['source_unit_name']
-        target = edge['target_unit_name']
+        source_name = edge['source_unit_name']
+        target_name = edge['target_unit_name']
         
-        matched_legacy_key = next((k for k in legacy_units.keys() if k == target or k.endswith(f"::{target}")), None)
-        
-        matched_recent_key = next((k for k in recent_units if k == source or k.endswith(f"::{source}")), None)
+        source_key = next((k for k in unit_map.keys() if k == source_name or k.endswith(f"::{source_name}")), None)
+        target_key = next((k for k in unit_map.keys() if k == target_name or k.endswith(f"::{target_name}")), None)
 
-        if matched_recent_key and matched_legacy_key:
-            target_unit = legacy_units[matched_legacy_key]
-            source_unit = unit_map[matched_recent_key]
+        if source_key and target_key:
+            source_unit = unit_map[source_key]
+            target_unit = unit_map[target_key]
             
-            print(f"Detected conflict: {matched_recent_key} -> {matched_legacy_key}")
+            # THE FIX: Calculate the relative difference in age between dependent units
+            age_difference = target_unit['age_days'] - source_unit['age_days']
             
-            # --- LLM Semantic Analysis ---
-            analysis = analyze_conflict_with_llm(
-                matched_recent_key, source_unit.get('content', ''),
-                matched_legacy_key, target_unit.get('content', '')
-            )
-            
-            description = (
-                f"Legacy Conflict: Active code '{matched_recent_key}' depends on '{matched_legacy_key}' "
-                f"(last touched {target_unit.get('last_modified_at', 'unknown')}).\n"
-                f"AI Analysis: {analysis}"
-            )
-            
-            risks.append({
-                "project_id": project_id,
-                "risk_type": "Legacy Conflict",
-                "severity": "Medium", 
-                "description": description,
-                "affected_units": [matched_recent_key, matched_legacy_key]
-            })
-            
-            # Increase Risk Scores
-            risk_scores[matched_recent_key] = risk_scores.get(matched_recent_key, 0) + 25
-            risk_scores[matched_legacy_key] = risk_scores.get(matched_legacy_key, 0) + 10
+            # RULE: If active code (< 30 days) depends on code that is significantly older (> 90 days older)
+            if source_unit['age_days'] < 30 and age_difference > 90:
+                
+                print(f"Detected conflict: {source_key} -> {target_key}")
+                
+                # Pass 'summary' instead of 'content' to save thousands of API tokens
+                analysis = analyze_conflict_with_llm(
+                    source_key, source_unit.get('summary', 'No summary available.'),
+                    target_key, target_unit.get('summary', 'No summary available.')
+                )
+                
+                description = (
+                    f"Legacy Conflict: Active code '{source_key}' depends on '{target_key}' "
+                    f"(untouched for {target_unit['age_days']} days).\n"
+                    f"AI Analysis: {analysis}"
+                )
+                
+                risks.append({
+                    "project_id": project_id,
+                    "risk_type": "Legacy Conflict",
+                    "severity": "Medium" if age_difference < 180 else "High", 
+                    "description": description,
+                    "affected_units": [source_key, target_key]
+                })
+                
+                # Increase Risk Scores
+                risk_scores[source_key] = risk_scores.get(source_key, 0) + 25
+                risk_scores[target_key] = risk_scores.get(target_key, 0) + 10
 
-    # 5. Base Risk Scores (Age Factors)
+    # 4. Base Risk Scores (Age Factors)
     score_updates = []
-    for unit in units:
-        u_name = unit['unit_name']
+    for u_name, unit in unit_map.items():
         current_score = risk_scores.get(u_name, 0)
         
-        # If it's legacy, it has a baseline risk
-        if u_name in legacy_units:
+        # Baseline risk for code older than 120 days
+        if unit['age_days'] > 120:
             current_score += 10
             
         final_score = min(current_score, 100)
@@ -124,7 +115,7 @@ def calculate_predictive_risks(project_id):
                 "risk_score": final_score
             })
 
-    # 6. Save Results
+    # 5. Save Results
     print(f"Saving {len(risks)} legacy conflicts.")
     save_risk_alerts(project_id, risks)
     update_unit_risk_scores(score_updates)

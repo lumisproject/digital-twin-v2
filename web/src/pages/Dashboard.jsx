@@ -6,7 +6,6 @@ import ReactMarkdown from 'react-markdown'
 export default function Dashboard() {
   const navigate = useNavigate()
 
-  // -- State --
   const [appState, setAppState] = useState('LOADING') 
   const [session, setSession] = useState(null)
   const [projectData, setProjectData] = useState(null)
@@ -15,12 +14,9 @@ export default function Dashboard() {
   const [input, setInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [repoUrl, setRepoUrl] = useState('')
-  const [copied, setCopied] = useState(false) 
-  
-  // Toggles
+  const [copied, setCopied] = useState(false)
   const [chatMode, setChatMode] = useState('multi-turn') 
   const [reasoning, setReasoning] = useState(false) 
-  
   const bottomRef = useRef(null)
 
   // 1. Boot: Check Session and Load Project
