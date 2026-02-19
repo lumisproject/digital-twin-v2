@@ -58,7 +58,7 @@ def enrich_block(block):
         "footprint": generate_footprint(block.content)
     }
 
-def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
+async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
     try:
         repo_path = os.path.abspath(f"./temp_repos/{project_id}")
         
@@ -147,7 +147,7 @@ def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
         # 5. RISK INTELLIGENCE TRIGGER
         if progress_callback: progress_callback("INTELLIGENCE", "Analyzing Predictive Risks...")
         
-        count = calculate_predictive_risks(project_id)
+        count = await calculate_predictive_risks(project_id)
         
         if progress_callback: progress_callback("DONE", f"Sync Complete. {count} Risks Found.")
 
