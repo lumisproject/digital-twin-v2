@@ -104,7 +104,6 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     # 2. CONTENT CHANGED: Reprocess
                     if progress_callback: progress_callback("PROCESSING", f"Updating {block.name}...")
                     
-                    # <-- ADDED HERE: Calculate accurate line-level git data per function
                     last_mod, author = get_function_metadata(repo_path, file_path, block.start_line, block.end_line, repo)
                     
                     enrichment = enrich_block(block)
@@ -134,7 +133,7 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
         db_units = supabase.table("memory_units").select("unit_name").eq("project_id", project_id).execute()
         db_unit_names = {u['unit_name'] for u in db_units.data}
         
-        # Identify orphans (in DB but not in current_scan_identifiers)
+        # Identify orphans
         orphans = list(db_unit_names - set(current_scan_identifiers))
         
         if orphans:
@@ -147,7 +146,7 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
         # 5. RISK INTELLIGENCE TRIGGER
         if progress_callback: progress_callback("INTELLIGENCE", "Analyzing Predictive Risks...")
         
-        count = await calculate_predictive_risks(project_id)
+        count = await calculate_predictive_risks(user_id,project_id)
         
         if progress_callback: progress_callback("DONE", f"Sync Complete. {count} Risks Found.")
 

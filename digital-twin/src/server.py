@@ -1,6 +1,6 @@
 import logging
-import asyncio # Added for non-blocking execution
-from typing import Dict, List, Optional
+import asyncio
+from typing import Dict
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,7 +14,7 @@ from src.db_client import supabase, get_project_risks
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LumisAPI")
 
-app = FastAPI(title="Lumis Digital Twin API")
+app = FastAPI(title="Lumis Brain API")
 
 # Allow Frontend access
 app.add_middleware(
@@ -34,7 +34,7 @@ class ChatRequest(BaseModel):
     project_id: str
     query: str
     mode: str = "multi-turn"
-    reasoning: bool = False # Added field for toggle
+    reasoning: bool = False
 
 class IngestRequest(BaseModel):
     user_id: str
@@ -71,21 +71,16 @@ def update_progress(project_id, task, message):
 async def github_webhook(user_id: str, project_id: str, request: Request, background_tasks: BackgroundTasks):
     try:
         # 1. Fetch project safely
-        res = supabase.table("projects") \
-            .select("*") \
-            .eq("id", project_id) \
-            .eq("user_id", user_id) \
-            .maybe_single() \
-            .execute()
+        res = supabase.table("projects").select("*").eq("id", project_id).eq("user_id", user_id).maybe_single().execute()
 
-        # Handle missing project (common if DB was truncated)
+        # Handle missing project
         if not res or not res.data:
             logger.warning(f"Webhook Ignored: Project {project_id} not found for user {user_id}")
             return {"status": "ignored", "reason": "project_not_found"}
 
         payload = await request.json()
 
-        # 2. Handle GitHub's "Zen" test ping
+        # 2. Github's test request to our server
         if "zen" in payload:
             logger.info("GitHub Zen ping received. Connection verified.")
             return {"status": "ok", "message": "Lumis is listening"}
@@ -155,9 +150,7 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
         if existing.data:
             project_id = existing.data[0]['id']
         else:
-            res = supabase.table("projects").insert({
-                "user_id": req.user_id, "repo_url": req.repo_url
-            }).execute()
+            res = supabase.table("projects").insert({"user_id": req.user_id, "repo_url": req.repo_url}).execute()
             project_id = res.data[0]['id']
 
         ingestion_state[project_id] = {"status": "starting", "logs": ["Request received..."], "step": "Init"}
@@ -187,9 +180,8 @@ async def get_risks_endpoint(project_id: str):
 @app.get("/api/status")
 async def health_check():
     """Simple health check for the frontend."""
-    return {"status": "ok", "service": "Lumis Digital Twin"}
+    return {"status": "ok", "service": "Lumis Project"}
 
 if __name__ == "__main__":
     import uvicorn
-    # Use the port defined by your environment or default to 5000
     uvicorn.run(app, host='0.0.0.0', port=5000)

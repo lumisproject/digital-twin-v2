@@ -27,19 +27,17 @@ def get_unit_footprint(project_id, unit_name):
     except Exception:
         return None
 
-def get_project_data(project_id):
+def get_project_data(user_id, project_id):
     """Fetches the entire graph for risk analysis."""
-    # Fetch all units (nodes)
+    # Fetch all units
     units_resp = supabase.table("memory_units")\
         .select("unit_name, file_path, last_modified_at, content, risk_score")\
-        .eq("project_id", project_id)\
-        .execute()
+        .eq("user_id", user_id).eq("project_id", project_id).execute()
     
-    # Fetch all edges (dependencies)
+    # Fetch all edges
     edges_resp = supabase.table("graph_edges")\
         .select("source_unit_name, target_unit_name")\
-        .eq("project_id", project_id)\
-        .execute()
+        .eq("user_id", user_id).eq("project_id", project_id).execute()
         
     return units_resp.data or [], edges_resp.data or []
 

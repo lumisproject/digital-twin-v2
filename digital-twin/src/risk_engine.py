@@ -30,11 +30,11 @@ async def analyze_conflict_with_llm(source_name, source_summary, target_name, ta
     return analysis if analysis else "Standard dependency risk detected."
 
 
-async def calculate_predictive_risks(project_id):
+async def calculate_predictive_risks(user_id, project_id):
     print(f"Starting Risk Analysis for {project_id}...")
     
     # 1. Fetch Graph Data
-    units, edges = get_project_data(project_id)
+    units, edges = get_project_data(user_id, project_id)
     if not units:
         return 0
 
@@ -53,10 +53,9 @@ async def calculate_predictive_risks(project_id):
             continue 
 
     # 3. BUILD THE SMART GRAPH
-    # This resolves Symbol Ambiguity by checking imports before linking functions
     G = nx.DiGraph()
     
-    # Map imports per file for fast lookup: { "full_file_path": ["imported.module.path"] }
+    # Map imports per file for fast lookup
     import_map = {}
     for edge in edges:
         if edge.get('edge_type') == 'imports' or '::' not in edge['target_unit_name']:
@@ -65,7 +64,6 @@ async def calculate_predictive_risks(project_id):
             import_map[src_file].append(edge['target_unit_name'])
 
     for edge in edges:
-        # Only process function calls for the graph nodes
         source_id = edge['source_unit_name']
         target_short_name = edge['target_unit_name']
         
@@ -93,7 +91,7 @@ async def calculate_predictive_risks(project_id):
     conflict_details = []
     
     active_units = [k for k, v in unit_map.items() if v['age_days'] < 30]
-    legacy_units = [k for k, v in unit_map.items() if v['age_days'] > 80] # Using 80 for safer test margin 
+    legacy_units = [k for k, v in unit_map.items() if v['age_days'] > 90] 
 
     print(f"Analyzing paths from {len(active_units)} active units to {len(legacy_units)} older units...")
 
@@ -105,14 +103,13 @@ async def calculate_predictive_risks(project_id):
             # nx.has_path checks for indirect dependencies (Depth 1, 2, or 3)
             if nx.has_path(G, source, target):
                 path = nx.shortest_path(G, source, target)
-                if 1 < len(path) <= 4: # Limit to 3 hops (4 nodes in path)
-                    
+                if 1 < len(path) <= 4:
                     source_unit = unit_map[source]
                     target_unit = unit_map[target]
                     age_difference = target_unit['age_days'] - source_unit['age_days']
                     
                     # TRIGGER: Significant relative age gap detected along a dependency path
-                    if age_difference > 80:
+                    if age_difference > 90:
                         print(f"Detected conflict: {source} -> {target} (Path length: {len(path)-1})")
                         
                         coro = analyze_conflict_with_llm(
@@ -147,7 +144,7 @@ async def calculate_predictive_risks(project_id):
             risks.append({
                 "project_id": project_id,
                 "risk_type": "Legacy Conflict",
-                "severity": "High" if det['age_difference'] > 150 else "Medium", 
+                "severity": "High" if det['age_difference'] > 180 else "Medium", 
                 "description": description,
                 "affected_units": [det['source_key'], det['target_key']]
             })
@@ -156,7 +153,7 @@ async def calculate_predictive_risks(project_id):
     score_updates = []
     for u_name, unit in unit_map.items():
         current_score = risk_scores.get(u_name, 0)
-        if unit['age_days'] > 120: current_score += 10
+        if unit['age_days'] > 90: current_score += 10
         final_score = min(current_score, 100)
         
         if final_score > 0:
