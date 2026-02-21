@@ -7,7 +7,7 @@ from tree_sitter_language_pack import get_parser, SupportedLanguage
 IGNORE_EXT = (
     '.png', '.jpg', '.jpeg', '.gif', '.exe', '.dll', '.pyc', '.o', '.obj', 
     '.css', '.svg', '.gitignore', '.csv', '.json', '.yaml', '.yml', 
-    '.txt', '.lock', '.xml', '.map', '.ico', '.woff', '.woff2', '.ttf'
+    '.txt', '.lock', '.xml', '.map', '.ico', '.woff', '.woff2', '.ttf',
 )
 
 SKIP_DIRS = {
@@ -101,10 +101,7 @@ class AdvancedCodeParser:
         if not self.filter_process(file_path):
             return []
 
-        lang = self._get_language(file_path)
-        if not lang:
-            return []
-
+        # 1. Read the file content first so both markdown and code parsers can use it
         if content is None:
             try:
                 with open(file_path, "rb") as f:
@@ -113,8 +110,10 @@ class AdvancedCodeParser:
                 print(f"Error reading {file_path}: {e}")
                 return []
         
+        # 2. FIX: Check for Markdown BEFORE checking for a Tree-sitter language
         _, ext = os.path.splitext(file_path)
         if ext.lower() == ".md":
+            print("..md file detected.")
             text_content = content.decode('utf-8', errors='ignore')
             file_name = os.path.basename(file_path)
             return [CodeBlock(
@@ -128,6 +127,11 @@ class AdvancedCodeParser:
                 parent_block=None
             )]
 
+        # 3. Proceed with standard Tree-sitter language check for source code
+        lang = self._get_language(file_path)
+        if not lang:
+            return []
+
         parser = get_parser(lang)
         if not parser:
             return []
@@ -138,13 +142,13 @@ class AdvancedCodeParser:
             
             blocks = []
             
-            # 1. Global Imports
+            # Global Imports
             file_imports = self._extract_imports(root, content, lang)
             
-            # 2. Walk Tree for Definitions
+            # Walk Tree for Definitions
             self._visit_node(root, content, blocks, file_path, lang, parent_scope=None)
             
-            # 3. Attach Context
+            # Attach Context
             for block in blocks:
                 if not block.imports:
                     block.imports = file_imports

@@ -30,11 +30,11 @@ async def analyze_conflict_with_llm(source_name, source_summary, target_name, ta
     return analysis if analysis else "Standard dependency risk detected."
 
 
-async def calculate_predictive_risks(user_id, project_id):
+async def calculate_predictive_risks(project_id):
     print(f"Starting Risk Analysis for {project_id}...")
     
     # 1. Fetch Graph Data
-    units, edges = get_project_data(user_id, project_id)
+    units, edges = get_project_data(project_id)
     if not units:
         return 0
 

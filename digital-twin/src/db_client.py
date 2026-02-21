@@ -27,17 +27,15 @@ def get_unit_footprint(project_id, unit_name):
     except Exception:
         return None
 
-def get_project_data(user_id, project_id):
+def get_project_data(project_id):
     """Fetches the entire graph for risk analysis."""
-    # Fetch all units
     units_resp = supabase.table("memory_units")\
         .select("unit_name, file_path, last_modified_at, content, risk_score")\
-        .eq("user_id", user_id).eq("project_id", project_id).execute()
+        .eq("project_id", project_id).execute()
     
-    # Fetch all edges
     edges_resp = supabase.table("graph_edges")\
         .select("source_unit_name, target_unit_name")\
-        .eq("user_id", user_id).eq("project_id", project_id).execute()
+        .eq("project_id", project_id).execute()
         
     return units_resp.data or [], edges_resp.data or []
 
@@ -51,53 +49,65 @@ def get_project_risks(project_id):
 
 # --- WRITE OPERATIONS ---
 
-def save_memory_unit(project_id, unit_data):
-    payload = {
-        "project_id": project_id,
-        "unit_name": unit_data["identifier"],
-        "unit_type": unit_data.get("type", "unknown"),
-        "file_path": unit_data["file_path"],
-        "content": unit_data.get("content"),
-        "summary": unit_data.get("summary"),
-        "code_footprint": unit_data.get("footprint"),
-        "embedding": unit_data.get("embedding"),
-        "last_modified_at": unit_data.get("last_modified_at"),
-        "author_email": unit_data.get("author_email")
-    }
-    return supabase.table("memory_units").upsert(
-        payload, on_conflict="project_id, unit_name"
-    ).execute()
-
 def save_edges(project_id, source_unit_name, targets_list, edge_type="calls"):
-    if not targets_list: return
-
-    # 1. Clean old edges for this specific unit ONLY (Safe Differential Sync)
-    supabase.table("graph_edges")\
-        .delete()\
-        .eq("project_id", project_id)\
-        .eq("source_unit_name", source_unit_name)\
-        .eq("edge_type", edge_type)\
-        .execute()
-        
-    # 2. Insert new edges
+    # Kept for backward compatibility
     edges = [{
         "project_id": project_id, 
         "source_unit_name": source_unit_name, 
         "target_unit_name": target,
         "edge_type": edge_type
     } for target in targets_list]
+    save_edges(project_id, edges)
+
+# --- FASTCODE OPTIMIZATION: BULK WRITE OPERATIONS ---
+
+def save_memory_units(project_id, units_data_list):
+    """Upserts multiple memory units in a single network transaction."""
+    if not units_data_list: return
     
-    if edges:
-        supabase.table("graph_edges").insert(edges).execute()
+    payloads = []
+    for unit_data in units_data_list:
+        payloads.append({
+            "project_id": project_id,
+            "unit_name": unit_data["identifier"],
+            "unit_type": unit_data.get("type", "unknown"),
+            "file_path": unit_data["file_path"],
+            "content": unit_data.get("content"),
+            "summary": unit_data.get("summary"),
+            "code_footprint": unit_data.get("footprint"),
+            "embedding": unit_data.get("embedding"),
+            "last_modified_at": unit_data.get("last_modified_at"),
+            "author_email": unit_data.get("author_email")
+        })
+    
+    # Supabase handles list upserts natively
+    return supabase.table("memory_units").upsert(
+        payloads, on_conflict="project_id, unit_name"
+    ).execute()
+
+def save_edges(project_id, edges_list):
+    """Inserts multiple graph edges in a single network transaction."""
+    if not edges_list: return
+    
+    # We clear out old edges for the sources being updated to handle differential sync cleanly
+    source_units = list(set([edge["source_unit_name"] for edge in edges_list]))
+    
+    if source_units:
+        # Delete old edges for the modified units before bulk inserting new ones
+        supabase.table("graph_edges")\
+            .delete()\
+            .eq("project_id", project_id)\
+            .in_("source_unit_name", source_units)\
+            .execute()
+            
+    supabase.table("graph_edges").insert(edges_list).execute()
 
 def save_risk_alerts(project_id, risks):
-    """Clears old conflicts and saves new ones."""
     if not risks: return
     supabase.table("project_risks").delete().eq("project_id", project_id).eq("risk_type", "Legacy Conflict").execute()
     supabase.table("project_risks").insert(risks).execute()
 
 def update_unit_risk_scores(updates):
-    """Batch updates risk scores."""
     if not updates: return
     for update in updates:
         supabase.table("memory_units")\
