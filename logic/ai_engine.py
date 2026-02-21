@@ -1,13 +1,18 @@
-from google import genai
 import json
+import os
+from openai import OpenAI
 from config import AI_API_KEY
 
-# Initialize the new Client
-client = genai.Client(api_key=AI_API_KEY)
-MODEL_ID = "gemini-2.0-flash" # Use the latest stable model
+# OpenRouter requires the base_url to be redirected
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=AI_API_KEY,
+)
+
+MODEL_ID = os.getenv("AI_MODEL", "stepfun/step-3.5-flash:free")
 
 def analyze_fulfillment(issue, code_diff):
-    """Uses the new google.genai SDK to determine if the task is fulfilled."""
+    """Uses OpenRouter to determine if the task is fulfilled."""
     prompt = f"""
     You are a Senior Technical Lead. Compare the Jira Task description against the Code Changes.
     
@@ -24,13 +29,14 @@ def analyze_fulfillment(issue, code_diff):
     """
     
     try:
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=MODEL_ID,
-            contents=prompt
+            messages=[{"role": "user", "content": prompt}],
         )
         
+        content = response.choices[0].message.content
         # Clean response if AI includes markdown code blocks
-        clean_json = response.text.strip().replace('```json', '').replace('```', '')
+        clean_json = content.strip().replace('```json', '').replace('```', '')
         return json.loads(clean_json)
     except Exception as e:
         print(f"AI Engine Error: {e}")
