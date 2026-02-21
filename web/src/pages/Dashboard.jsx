@@ -15,8 +15,8 @@ export default function Dashboard() {
   const [chatLoading, setChatLoading] = useState(false)
   const [repoUrl, setRepoUrl] = useState('')
   const [copied, setCopied] = useState(false)
-  const [chatMode, setChatMode] = useState('multi-turn') 
-  const [reasoning, setReasoning] = useState(false) 
+  const [chatMode, setChatMode] = useState('single-turn') 
+  const [reasoning, setReasoning] = useState(true) 
   const bottomRef = useRef(null)
 
   // 1. Boot: Check Session and Load Project

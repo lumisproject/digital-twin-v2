@@ -9,7 +9,7 @@ from src.answer_generator import AnswerGenerator
 from src.query_processor import QueryProcessor
 
 class LumisAgent:
-    def __init__(self, project_id: str, mode: str = "multi-turn", max_steps: int = 4):
+    def __init__(self, project_id: str, mode: str = "single-turn", max_steps: int = 4):
         self.project_id = project_id
         self.mode = mode
         self.retriever = GraphRetriever(project_id)
@@ -19,8 +19,9 @@ class LumisAgent:
         self.conversation_history: List[Dict[str, str]] = []
         self.logger = logging.getLogger(__name__)
 
-    def ask(self, user_query: str, reasoning_enabled: bool = False) -> str:
+    def ask(self, user_query: str, reasoning_enabled: bool = True) -> str:
         print(self.mode)
+        print("Reasoning: ",reasoning_enabled)
         if self.mode == "single-turn":
             self.conversation_history = []
 

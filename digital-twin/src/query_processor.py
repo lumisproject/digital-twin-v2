@@ -165,7 +165,7 @@ class QueryProcessor:
             PSEUDOCODE_HINTS: <value>
         """
         # Call your existing service
-        response = get_llm_completion(system_prompt, user_prompt, reasoning_enabled=False)
+        response = get_llm_completion(system_prompt, user_prompt, reasoning_enabled=True)
         return self._parse_llm_response(response)
 
     def _parse_llm_response(self, text: str) -> Dict[str, Any]:

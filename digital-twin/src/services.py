@@ -16,7 +16,7 @@ client = OpenAI(
 
 embed_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-def get_llm_completion(system_prompt, user_prompt, temperature=0.2, reasoning_enabled=False):
+def get_llm_completion(system_prompt, user_prompt, temperature=0.2, reasoning_enabled=True):
     try:
         params = {
             "model": LLM_MODEL,

@@ -88,8 +88,7 @@ class GraphRetriever:
         
         user_prompt = f"User Question: {user_query}\n\nAugmented Search Query:"
         
-        # Use reasoning=False for speed
-        suggestion = get_llm_completion(system_prompt, user_prompt, temperature=0.3, reasoning_enabled=False)
+        suggestion = get_llm_completion(system_prompt, user_prompt, temperature=0.3, reasoning_enabled=True)
         return suggestion.strip() if suggestion else user_query
 
     def _expand_graph(self, initial_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

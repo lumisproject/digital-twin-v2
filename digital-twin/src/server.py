@@ -33,8 +33,8 @@ ingestion_state: Dict[str, Dict] = {}
 class ChatRequest(BaseModel):
     project_id: str
     query: str
-    mode: str = "multi-turn"
-    reasoning: bool = False
+    mode: str = "single-turn"
+    reasoning: bool = True
 
 class IngestRequest(BaseModel):
     user_id: str
