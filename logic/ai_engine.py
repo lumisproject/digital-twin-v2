@@ -1,12 +1,13 @@
-import google.generativeai as genai
+from google import genai
 import json
 from config import AI_API_KEY
 
-genai.configure(api_key=AI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+# Initialize the new Client
+client = genai.Client(api_key=AI_API_KEY)
+MODEL_ID = "gemini-2.0-flash" # Use the latest stable model
 
 def analyze_fulfillment(issue, code_diff):
-    """Uses AI to determine if the code diff satisfies the Jira issue requirements."""
+    """Uses the new google.genai SDK to determine if the task is fulfilled."""
     prompt = f"""
     You are a Senior Technical Lead. Compare the Jira Task description against the Code Changes.
     
@@ -22,10 +23,15 @@ def analyze_fulfillment(issue, code_diff):
     3. "new_tasks": A list of objects with "title" and "description" for any missing features or bugs found.
     """
     
-    response = model.generate_content(prompt)
     try:
+        response = client.models.generate_content(
+            model=MODEL_ID,
+            contents=prompt
+        )
+        
         # Clean response if AI includes markdown code blocks
         clean_json = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(clean_json)
-    except:
+    except Exception as e:
+        print(f"AI Engine Error: {e}")
         return {"status": "INCOMPLETE", "summary": "AI could not parse response.", "new_tasks": []}
