@@ -57,4 +57,4 @@ def jira_callback(request: Request):
     }
 
 
-# test XD
+# test for AI Engine it using LUMIS-5
