@@ -10,8 +10,15 @@ def jira_headers(access_token: str):
 
 def get_issue(cloud_id: str, issue_key: str, access_token: str):
     """Fetches full issue data including status."""
-    # Note: Using the specific Jira Cloud URL format
     url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/issue/{issue_key}"
+    response = requests.get(url, headers=jira_headers(access_token))
+    response.raise_for_status()
+    return response.json()
+
+def get_issue_details(cloud_id: str, issue_key: str, access_token: str):
+    """Specifically fetches summary and description for AI analysis."""
+    # We use rest/api/3/issue/{key}?fields=summary,description
+    url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/issue/{issue_key}?fields=summary,description,status"
     response = requests.get(url, headers=jira_headers(access_token))
     response.raise_for_status()
     return response.json()

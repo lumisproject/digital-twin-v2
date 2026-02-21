@@ -14,3 +14,7 @@ JIRA_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 JIRA_API_BASE = "https://api.atlassian.com"
 # Base for instance actions
 JIRA_API_BASE_URL = "https://api.atlassian.com/ex/jira"
+
+# Add these to your existing config.py
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+AI_API_KEY = os.getenv("AI_API_KEY") # e.g., for Gemini or OpenAI

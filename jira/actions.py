@@ -30,3 +30,25 @@ def transition_issue(cloud_id: str, issue_key: str, transition_name: str, access
     # 2. Execute the transition
     payload = {"transition": {"id": target["id"]}}
     requests.post(base_url, headers=jira_headers(access_token), json=payload).raise_for_status()
+
+def create_issue(cloud_id: str, project_key: str, summary: str, description: str, access_token: str):
+    """Creates a new Jira issue."""
+    url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/issue"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "fields": {
+            "project": {"key": project_key},
+            "summary": summary,
+            "description": {
+                "type": "doc", "version": 1,
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}]
+            },
+            "issuetype": {"name": "Task"}
+        }
+    }
+    res = requests.post(url, headers=headers, json=payload)
+    res.raise_for_status()
